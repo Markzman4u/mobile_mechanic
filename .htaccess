@@ -1,0 +1,5 @@
+# Basic rewrite rules placeholder
+Options -Indexes
+RewriteEngine On
+# Example: redirect to index
+RewriteRule ^$ index.php [L]

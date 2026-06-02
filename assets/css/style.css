@@ -1,0 +1,68 @@
+/* Design theme: Charcoal / Dark Gray, Safety Orange, White / Light Gray */
+:root{
+	--charcoal:#2b2b2b;
+	--dark-gray:#4a4a4a;
+	--safety-orange:#ff6600;
+	--white:#ffffff;
+	--light-gray:#f5f6f7;
+	--muted:#9aa0a6;
+}
+
+html,body{height:100%;}
+body{
+	font-family: Arial, Helvetica, sans-serif;
+	margin:0;padding:0;
+	background:var(--light-gray);
+	color:var(--charcoal);
+}
+
+header{background:var(--charcoal);color:var(--white);padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
+header h1{margin:0;font-size:1.4rem}
+
+nav{display:flex;align-items:center}
+nav ul{list-style:none;padding:0;margin:0;display:flex;gap:18px;align-items:center}
+nav a{color:var(--white);text-decoration:none;padding:6px 8px;border-radius:4px}
+nav a:hover{background:rgba(255,102,0,0.08);color:var(--safety-orange)}
+
+/* Page layout */
+main{padding:24px;max-width:1100px;margin:24px auto;background:var(--white);box-shadow:0 6px 18px rgba(43,43,43,0.06);border-radius:8px}
+.page-layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:24px;max-width:1400px;margin:24px auto;padding:0 24px}
+.page-layout aside{background:var(--dark-gray);color:var(--white);padding:16px;border-radius:8px;margin:16px 0;position:sticky;top:24px;align-self:start}
+.sidebar-nav h2{margin-top:0;margin-bottom:16px;font-size:1.1rem;text-transform:uppercase;letter-spacing:.05em;color:var(--white);border-bottom:1px solid rgba(255,255,255,.12);padding-bottom:8px}
+.sidebar-nav ul{list-style:none;padding:0;margin:0}
+.sidebar-nav li{margin-bottom:10px}
+.sidebar-nav li a{display:block;color:var(--white);text-decoration:none;padding:10px 14px;border-radius:8px;transition:background .2s,color .2s}
+.sidebar-nav li a:hover{background:rgba(255,255,255,.08);color:#fff}
+.sidebar-nav li.active a{background:var(--safety-orange);color:var(--dark-gray);font-weight:700}
+.page-layout main{margin:0;max-width:none}
+@media(max-width:900px){.page-layout{grid-template-columns:1fr;padding:0 16px}.page-layout aside{position:static;top:auto}}
+
+/* Cards and panels */
+.card{background:var(--white);border:1px solid #eee;padding:16px;border-radius:8px;box-shadow:0 2px 6px rgba(43,43,43,0.03)}
+
+/* Buttons */
+.btn{display:inline-block;padding:8px 14px;border-radius:6px;border:none;cursor:pointer;font-weight:600}
+.btn-primary{background:var(--safety-orange);color:var(--white)}
+.btn-outline{background:transparent;border:1px solid var(--dark-gray);color:var(--dark-gray)}
+
+/* Forms */
+input[type="text"],input[type="email"],input[type="password"],select,textarea{width:100%;padding:8px;border:1px solid #e0e0e0;border-radius:6px;margin-top:6px;margin-bottom:12px}
+label{display:block;font-weight:600;color:var(--charcoal)}
+
+/* Tables */
+table{width:100%;border-collapse:collapse;background:var(--white)}
+th,td{padding:10px;border-bottom:1px solid #f0f0f0;text-align:left}
+th{background:var(--light-gray);font-weight:700}
+
+/* Footer */
+footer{background:var(--dark-gray);color:var(--light-gray);padding:18px;text-align:center;border-top:4px solid var(--charcoal);margin-top:24px;border-radius:0}
+
+/* Status labels */
+.status{display:inline-block;padding:6px 8px;border-radius:999px;font-weight:700;font-size:0.85rem}
+.status-pending{background:#fff6eb;color:#b35b00}
+.status-assigned{background:#fff3f0;color:var(--safety-orange)}
+.status-in_progress{background:#eef7ff;color:#0b74de}
+.status-completed{background:#eefbe7;color:#2e7d32}
+
+/* Utility */
+.muted{color:var(--muted)}
