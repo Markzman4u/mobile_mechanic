@@ -11,29 +11,16 @@ if (!isAdmin()) {
 
 $pdo = getPDO();
 
-$requestId = isset($_GET['id']) && ctype_digit($_GET['id']) ? (int) $_GET['id'] : null;
+$historyId = isset($_GET['history_id']) && ctype_digit($_GET['history_id']) ? (int) $_GET['history_id'] : null;
 
-if (!$requestId) {
+if (!$historyId) {
     header('Location: ' . getBasePath() . 'admin/history.php');
     exit;
 }
 
-// ── Load full request + customer + mechanic ───────────────────────────────────
-$stmt = $pdo->prepare(
-    "SELECT r.*,
-            COALESCE(u.full_name,  w.full_name)  AS customer_name,
-            COALESCE(u.email,      w.email)       AS customer_email,
-            COALESCE(u.phone,      w.phone)       AS customer_phone,
-            w.address                             AS walkin_address,
-            CASE WHEN r.walkin_id IS NOT NULL THEN 1 ELSE 0 END AS is_walkin,
-            m.name                                AS mechanic_name
-     FROM requests r
-     LEFT JOIN users            u ON r.user_id    = u.id
-     LEFT JOIN walkin_customers w ON r.walkin_id  = w.id
-     LEFT JOIN mechanics        m ON r.mechanic_id = m.id
-     WHERE r.id = :id"
-);
-$stmt->execute([':id' => $requestId]);
+// ── Load history record (permanent source of truth for invoices) ─────────────────
+$stmt = $pdo->prepare('SELECT * FROM history_records WHERE id = :hid');
+$stmt->execute([':hid' => $historyId]);
 $request = $stmt->fetch();
 
 if (!$request) {
@@ -41,22 +28,16 @@ if (!$request) {
     exit;
 }
 
-// ── Load service + items ──────────────────────────────────────────────────────
-$stmt = $pdo->prepare('SELECT * FROM services WHERE request_id = :rid LIMIT 1');
-$stmt->execute([':rid' => $requestId]);
-$service = $stmt->fetch();
+// ── Load service items from history ───────────────────────────────────────────────
+$stmt = $pdo->prepare('SELECT * FROM history_service_items WHERE history_id = :hid ORDER BY id ASC');
+$stmt->execute([':hid' => $historyId]);
+$items = $stmt->fetchAll();
 
-$items = [];
-$total = 0;
-if ($service) {
-    $stmt = $pdo->prepare('SELECT * FROM service_items WHERE service_id = :sid ORDER BY id ASC');
-    $stmt->execute([':sid' => $service['id']]);
-    $items = $stmt->fetchAll();
-    $total = array_sum(array_column($items, 'price'));
-}
+$total = array_sum(array_column($items, 'price'));
+$service = ['created_at' => $request['completed_at']];
 
-// Invoice number formatted as INV-YEAR-ID
-$invoiceNumber = 'INV-' . date('Y') . '-' . str_pad($requestId, 4, '0', STR_PAD_LEFT);
+// Invoice number formatted as INV-YEAR-REQUEST_ID
+$invoiceNumber = 'INV-' . date('Y') . '-' . str_pad($request['request_id'], 4, '0', STR_PAD_LEFT);
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/navbar.php';
@@ -194,9 +175,9 @@ require_once __DIR__ . '/../includes/sidebar.php';
             </div>
             <div class="inv-meta">
                 <div class="inv-number"><?php echo $invoiceNumber; ?></div>
-                <div class="inv-date">Issued: <?php echo date('F d, Y', strtotime($service['created_at'] ?? $request['created_at'])); ?></div>
+                <div class="inv-date">Issued: <?php echo date('F d, Y', strtotime($request['completed_at'])); ?></div>
                 <div style="margin-top:6px;">
-                    <span class="status status-<?php echo e($request['status']); ?>"><?php echo statusLabel($request['status']); ?></span>
+                    <span class="status status-<?php echo e($request['status']); ?>"><?php echo ucfirst(e($request['status'])); ?></span>
                 </div>
             </div>
         </div>
@@ -208,21 +189,16 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 <h5>Customer</h5>
                 <p><?php echo e($request['customer_name'] ?? '—'); ?></p>
                 <p><?php echo e($request['customer_phone'] ?? '—'); ?></p>
-                <p><?php echo e($request['customer_email'] ?? '—'); ?></p>
-                <?php if ($request['is_walkin'] && $request['walkin_address']): ?>
-                    <p><?php echo e($request['walkin_address']); ?></p>
-                <?php endif; ?>
-                <?php if ($request['is_walkin']): ?>
+                <?php if ($request['walkin_id']): ?>
                     <p><span style="font-size:0.75rem;background:#fff3e0;color:#e65100;border:1px solid #ffcc80;border-radius:3px;padding:1px 6px;">Walk-in</span></p>
                 <?php endif; ?>
             </div>
 
             <div class="inv-info-box">
                 <h5>Request Details</h5>
-                <p><strong>Request ID:</strong> #<?php echo e($request['id']); ?></p>
+                <p><strong>Request ID:</strong> #<?php echo e($request['request_id']); ?></p>
                 <p><strong>Problem:</strong> <?php echo e($request['problem_type']); ?></p>
-                <p><strong>Service:</strong> <?php echo e($service['service_name'] ?? '—'); ?></p>
-                <p><strong>Date:</strong> <?php echo date('M d, Y', strtotime($request['created_at'])); ?></p>
+                <p><strong>Date:</strong> <?php echo date('M d, Y', strtotime($request['request_created_at'])); ?></p>
             </div>
 
             <div class="inv-info-box">

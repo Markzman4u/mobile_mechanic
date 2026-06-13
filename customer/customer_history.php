@@ -9,37 +9,27 @@ if (isAdmin()) {
     exit;
 }
 
-$pdo    = getPDO();
-$userId = $_SESSION['user_id'];
+$pdo     = getPDO();
+$userId  = $_SESSION['user_id'];
 $message = '';
 $error   = '';
 
-// ── Handle: Delete Selected ───────────────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_selected'])) {
+// ── Handle: Hide Selected ─────────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hide_selected'])) {
     $ids = array_filter(array_map('intval', (array)($_POST['selected_ids'] ?? [])));
 
     if (!empty($ids)) {
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
 
-        // Delete service_items first (grandchild rows)
+        // Only allow hiding records that belong to this user.
+        // hidden_by_admin is intentionally NOT checked here:
+        // admin soft-deletes are admin-side only and do not affect the customer view.
         $pdo->prepare(
-            "DELETE si FROM service_items si
-             JOIN services s ON si.service_id = s.id
-             JOIN requests r ON s.request_id = r.id
-             WHERE r.user_id = ? AND r.id IN ($placeholders)"
-        )->execute([$userId, ...$ids]);
-
-        // Delete services (child rows)
-        $pdo->prepare(
-            "DELETE s FROM services s
-             JOIN requests r ON s.request_id = r.id
-             WHERE r.user_id = ? AND r.id IN ($placeholders)"
-        )->execute([$userId, ...$ids]);
-
-        // Delete requests
-        $pdo->prepare(
-            "DELETE FROM requests WHERE id IN ($placeholders) AND user_id = ?"
-        )->execute([...$ids, $userId]);
+            "UPDATE history_records
+             SET hidden_by_user = TRUE
+             WHERE id IN ($placeholders)
+               AND user_id = ?"
+        )->execute([...array_values($ids), $userId]);
 
         $message = count($ids) . ' record(s) removed from your history.';
     } else {
@@ -47,53 +37,48 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_selected'])) {
     }
 }
 
-// ── Handle: Clear All ─────────────────────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['delete_all'])) {
-    // Delete service_items first
+// ── Handle: Hide All ──────────────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hide_all'])) {
+    // Same here: admin's hidden_by_admin flag is irrelevant to customer hide-all.
     $pdo->prepare(
-        "DELETE si FROM service_items si
-         JOIN services s ON si.service_id = s.id
-         JOIN requests r ON s.request_id = r.id
-         WHERE r.user_id = ? AND r.status = 'completed'"
-    )->execute([$userId]);
-
-    // Delete services
-    $pdo->prepare(
-        "DELETE s FROM services s
-         JOIN requests r ON s.request_id = r.id
-         WHERE r.user_id = ? AND r.status = 'completed'"
-    )->execute([$userId]);
-
-    // Delete completed requests
-    $pdo->prepare(
-        "DELETE FROM requests WHERE user_id = ? AND status = 'completed'"
+        "UPDATE history_records
+         SET hidden_by_user = TRUE
+         WHERE user_id = ?
+           AND hidden_by_user = FALSE"
     )->execute([$userId]);
 
     $message = 'Your service history has been cleared.';
 }
 
-// ── Load completed requests for this user ─────────────────────────────────────
-// Only show completed jobs that have pricing information (billing completed)
+// ── Load history records for this user ───────────────────────────────────────
+// NOTE: hidden_by_admin is deliberately excluded from this filter.
+// Admin soft-deletes only affect the admin's history view, not the customer's.
+// Only hidden_by_user controls visibility here.
 $stmt = $pdo->prepare(
-    "SELECT r.id          AS request_id,
-            r.problem_type,
-            r.status,
-            r.created_at  AS request_date,
-            m.name        AS mechanic_name,
-            s.id          AS service_id,
-            s.service_name,
-            s.total_amount,
-            s.created_at  AS display_date
-     FROM requests r
-     INNER JOIN services  s ON s.request_id = r.id
-     LEFT JOIN mechanics m ON r.mechanic_id = m.id
-     WHERE r.user_id = :uid
-       AND r.status   = 'completed'
-       AND s.total_amount IS NOT NULL
-     ORDER BY display_date DESC"
+    "SELECT hr.id,
+            hr.request_id,
+            hr.problem_type,
+            hr.status,
+            hr.mechanic_name,
+            hr.total_amount,
+            hr.completed_at,
+            hr.request_created_at
+     FROM history_records hr
+     WHERE hr.user_id       = :uid
+       AND hr.hidden_by_user = FALSE
+     ORDER BY hr.completed_at DESC"
 );
 $stmt->execute([':uid' => $userId]);
-$serviceList = $stmt->fetchAll();
+$records = $stmt->fetchAll();
+
+// ── Count per tab ─────────────────────────────────────────────────────────────
+$countAll       = count($records);
+$countCompleted = 0;
+$countRejected  = 0;
+foreach ($records as $rec) {
+    if ($rec['status'] === 'completed') $countCompleted++;
+    if ($rec['status'] === 'rejected')  $countRejected++;
+}
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/navbar.php';
@@ -102,7 +87,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
 <main>
 <div class="card">
     <h2>Service History</h2>
-    <p class="muted">All your completed service requests and invoices.</p>
+    <p class="muted">All your completed and rejected service requests.</p>
 
     <?php if ($message): ?>
         <div style="background:#e8f7e9;border:1px solid #8bc34a;color:#2f6627;padding:12px;border-radius:6px;margin-bottom:16px;">
@@ -116,6 +101,44 @@ require_once __DIR__ . '/../includes/sidebar.php';
     <?php endif; ?>
 
     <style>
+        /* ── Filter tabs ───────────────────────────────────────────────── */
+        .filter-tabs {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            margin-bottom: 16px;
+        }
+        .filter-tab {
+            padding: 6px 14px;
+            border-radius: 20px;
+            border: 1px solid #ddd;
+            background: #f5f5f5;
+            color: #555;
+            font-size: 0.85rem;
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.15s;
+            user-select: none;
+        }
+        .filter-tab:hover { border-color: #ff6600; color: #ff6600; background: #fff8f0; }
+        .filter-tab.active {
+            background: #ff6600;
+            color: #fff;
+            border-color: #ff6600;
+            font-weight: 600;
+        }
+        .filter-tab .tab-count {
+            background: rgba(0,0,0,0.12);
+            border-radius: 10px;
+            padding: 1px 7px;
+            font-size: 0.78rem;
+            font-weight: 700;
+        }
+        .filter-tab.active .tab-count { background: rgba(255,255,255,0.3); }
+
+        /* ── Toolbar ───────────────────────────────────────────────────── */
         .toolbar {
             display: flex;
             align-items: center;
@@ -143,6 +166,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
         }
         .btn-danger:hover    { background: #c0392b; }
         .btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
+
         .btn-outline-danger {
             background: transparent;
             color: #d9534f;
@@ -156,6 +180,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .btn-outline-danger:hover    { background: #fdf0ef; }
         .btn-outline-danger:disabled { opacity: 0.45; cursor: not-allowed; }
 
+        /* ── Selection bar ─────────────────────────────────────────────── */
         #selection-bar {
             display: none;
             align-items: center;
@@ -178,9 +203,25 @@ require_once __DIR__ . '/../includes/sidebar.php';
             accent-color: var(--safety-orange, #ff6600);
         }
 
-        /* Search highlight */
+        /* ── Status badges ─────────────────────────────────────────────── */
+        .status-completed { background:#e8f7e9; color:#2f6627; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
+        .status-rejected  { background:#fff4f4; color:#a94442; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
+
         mark { background: #ffe082; border-radius: 2px; padding: 0 2px; }
     </style>
+
+    <!-- ── Filter Tabs ──────────────────────────────────────────────────── -->
+    <div class="filter-tabs">
+        <span class="filter-tab active" data-filter="all">
+            All <span class="tab-count"><?php echo $countAll; ?></span>
+        </span>
+        <span class="filter-tab" data-filter="completed">
+            ✅ Completed <span class="tab-count"><?php echo $countCompleted; ?></span>
+        </span>
+        <span class="filter-tab" data-filter="rejected">
+            ❌ Rejected <span class="tab-count"><?php echo $countRejected; ?></span>
+        </span>
+    </div>
 
     <form method="post" id="history-form">
 
@@ -189,16 +230,18 @@ require_once __DIR__ . '/../includes/sidebar.php';
             <input type="search" id="search-input"
                    placeholder="Search by request ID, problem, mechanic or date…">
 
-            <button type="submit" name="delete_selected" id="btn-delete-selected"
+            <!-- Hide Selected -->
+            <button type="submit" name="hide_selected" id="btn-hide-selected"
                     class="btn-danger" disabled
-                    onclick="return confirm('Remove selected records from your history?')">
-                🗑 Remove Selected
+                    onclick="return confirm('Hide selected record(s) from your history? This cannot be undone from your account.')">
+                🗄 Remove Selected
             </button>
 
-            <button type="submit" name="delete_all"
+            <!-- Hide All -->
+            <button type="submit" name="hide_all"
                     class="btn-outline-danger"
-                    <?php echo empty($serviceList) ? 'disabled' : ''; ?>
-                    onclick="return confirm('Clear your entire service history? This cannot be undone.')">
+                    <?php echo empty($records) ? 'disabled' : ''; ?>
+                    onclick="return confirm('Clear your entire service history view? This cannot be undone from your account.')">
                 ✕ Clear All
             </button>
         </div>
@@ -206,7 +249,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
         <!-- ── Selection bar ─────────────────────────────────────────── -->
         <div id="selection-bar">
             <span><span id="selected-count">0</span> record(s) selected</span>
-            <button type="button" class="btn" style="padding:4px 10px;font-size:0.8rem;"
+            <button type="button" class="btn"
+                    style="padding:4px 10px;font-size:0.8rem;"
                     onclick="clearSelection()">Deselect All</button>
         </div>
 
@@ -219,58 +263,83 @@ require_once __DIR__ . '/../includes/sidebar.php';
                     </th>
                     <th>Request ID</th>
                     <th>Problem</th>
-                    <th>Service</th>
                     <th>Mechanic</th>
-                    <th>Date</th>
+                    <th>Status</th>
+                    <th>Completed</th>
                     <th>Amount</th>
                     <th>Invoice</th>
                 </tr>
             </thead>
             <tbody>
-                <?php if (empty($serviceList)): ?>
+                <?php if (empty($records)): ?>
                     <tr id="empty-row">
                         <td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">
                             No service history found.
                         </td>
                     </tr>
                 <?php else: ?>
-                    <?php foreach ($serviceList as $srv):
+                    <?php foreach ($records as $rec):
                         $searchData = strtolower(
-                            $srv['request_id'] . ' ' .
-                            ($srv['problem_type']   ?? '') . ' ' .
-                            ($srv['service_name']   ?? '') . ' ' .
-                            ($srv['mechanic_name']  ?? '') . ' ' .
-                            date('M d Y', strtotime($srv['display_date'])) . ' ' .
-                            date('m/d/Y', strtotime($srv['display_date']))
+                            $rec['request_id']                           . ' ' .
+                            ($rec['problem_type']  ?? '')                . ' ' .
+                            ($rec['mechanic_name'] ?? '')                . ' ' .
+                            $rec['status']                               . ' ' .
+                            ($rec['completed_at']
+                                ? date('M d Y', strtotime($rec['completed_at']))
+                                : '')
                         );
                     ?>
-                        <tr data-search="<?php echo e($searchData); ?>">
+                        <tr data-search="<?php echo e($searchData); ?>"
+                            data-status="<?php echo e($rec['status']); ?>">
                             <td>
                                 <input type="checkbox" name="selected_ids[]"
-                                       value="<?php echo $srv['request_id']; ?>"
+                                       value="<?php echo $rec['id']; ?>"
                                        class="row-check"
                                        onclick="updateSelection()">
                             </td>
-                            <td>#<?php echo e($srv['request_id']); ?></td>
-                            <td class="col-problem"><?php echo e($srv['problem_type'] ?? '—'); ?></td>
-                            <td><?php echo e($srv['service_name'] ?? '—'); ?></td>
-                            <td class="col-mechanic"><?php echo e($srv['mechanic_name'] ?? '—'); ?></td>
-                            <td class="col-date"><?php echo date('M d, Y', strtotime($srv['display_date'])); ?></td>
-                            <td>$<?php echo number_format((float)$srv['total_amount'], 2); ?></td>
+                            <td>#<?php echo e($rec['request_id']); ?></td>
+                            <td class="col-problem"><?php echo e($rec['problem_type'] ?? '—'); ?></td>
+                            <td class="col-mechanic"><?php echo e($rec['mechanic_name'] ?? '—'); ?></td>
                             <td>
-                                <a href="<?php echo getBasePath(); ?>customer/invoice.php?id=<?php echo $srv['request_id']; ?>"
-                                   class="btn btn-primary" style="padding:4px 12px;font-size:0.82rem;">
-                                    View Invoice
-                                </a>
+                                <span class="status-<?php echo $rec['status']; ?>">
+                                    <?php echo ucfirst(e($rec['status'])); ?>
+                                </span>
+                            </td>
+                            <td class="col-date">
+                                <?php echo $rec['completed_at']
+                                    ? date('M d, Y', strtotime($rec['completed_at']))
+                                    : '—'; ?>
+                            </td>
+                            <td>
+                                <?php echo $rec['total_amount'] > 0
+                                    ? '$' . number_format((float)$rec['total_amount'], 2)
+                                    : '—'; ?>
+                            </td>
+                            <td>
+                                <?php if ($rec['status'] === 'completed'): ?>
+                                    <a href="<?php echo getBasePath(); ?>customer/invoice.php?history_id=<?php echo $rec['id']; ?>"
+                                       class="btn btn-primary"
+                                       style="padding:4px 12px;font-size:0.82rem;">
+                                        View Invoice
+                                    </a>
+                                <?php else: ?>
+                                    <span style="color:var(--muted);font-size:0.82rem;">N/A</span>
+                                <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
+                    <!-- Shown when filter/search yields no visible rows -->
+                    <tr id="no-results-row" style="display:none;">
+                        <td colspan="8" style="text-align:center;color:var(--muted);padding:24px;">
+                            No records match the selected filter.
+                        </td>
+                    </tr>
                 <?php endif; ?>
             </tbody>
         </table>
 
         <p class="muted" style="margin-top:12px;font-size:0.85rem;" id="result-count">
-            <?php echo count($serviceList); ?> record(s) found.
+            <?php echo $countAll; ?> record(s) found.
         </p>
 
     </form>
@@ -278,24 +347,89 @@ require_once __DIR__ . '/../includes/sidebar.php';
 </main>
 
 <script>
-    // ── Select All ────────────────────────────────────────────────────────────
-    document.getElementById('check-all').addEventListener('change', function () {
-        document.querySelectorAll('.row-check:not([style*="display:none"])').forEach(cb => {
-            cb.checked = this.checked;
-            cb.closest('tr').classList.toggle('selected-row', this.checked);
+    // ── State ──────────────────────────────────────────────────────────────
+    let activeFilter = 'all';
+    let searchQuery  = '';
+
+    // ── Apply filter + search together ────────────────────────────────────
+    function applyFilters() {
+        const rows    = document.querySelectorAll('#history-table tbody tr[data-status]');
+        let   visible = 0;
+
+        rows.forEach(row => {
+            const matchesFilter =
+                activeFilter === 'all'       ? true :
+                activeFilter === 'completed' ? row.dataset.status === 'completed' :
+                activeFilter === 'rejected'  ? row.dataset.status === 'rejected'  :
+                true;
+
+            const matchesSearch = !searchQuery || row.dataset.search.includes(searchQuery);
+            const show = matchesFilter && matchesSearch;
+
+            row.style.display = show ? '' : 'none';
+
+            if (show) {
+                visible++;
+                // Highlight matching text in key columns
+                ['col-problem', 'col-mechanic', 'col-date'].forEach(cls => {
+                    const cell = row.querySelector('.' + cls);
+                    if (!cell) return;
+                    const raw = cell.dataset.raw ?? (cell.dataset.raw = cell.textContent);
+                    cell.innerHTML = searchQuery
+                        ? raw.replace(
+                            new RegExp('(' + searchQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'),
+                            '<mark>$1</mark>'
+                          )
+                        : raw;
+                });
+            } else {
+                const cb = row.querySelector('.row-check');
+                if (cb) cb.checked = false;
+            }
         });
+
+        // Empty state row
+        const noResults = document.getElementById('no-results-row');
+        if (noResults) noResults.style.display = visible === 0 ? 'table-row' : 'none';
+
+        document.getElementById('result-count').textContent = visible + ' record(s) found.';
+        updateSelection();
+    }
+
+    // ── Filter tab clicks ─────────────────────────────────────────────────
+    document.querySelectorAll('.filter-tab').forEach(tab => {
+        tab.addEventListener('click', function () {
+            document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
+            this.classList.add('active');
+            activeFilter = this.dataset.filter;
+            applyFilters();
+        });
+    });
+
+    // ── Search ────────────────────────────────────────────────────────────
+    document.getElementById('search-input').addEventListener('input', function () {
+        searchQuery = this.value.toLowerCase().trim();
+        applyFilters();
+    });
+
+    // ── Select all (visible rows only) ────────────────────────────────────
+    document.getElementById('check-all').addEventListener('change', function () {
+        document.querySelectorAll('#history-table tbody tr[data-status]:not([style*="display:none"]) .row-check')
+            .forEach(cb => {
+                cb.checked = this.checked;
+                cb.closest('tr').classList.toggle('selected-row', this.checked);
+            });
         updateSelection();
     });
 
-    // ── Update selection state ────────────────────────────────────────────────
     function updateSelection() {
         const checked  = document.querySelectorAll('.row-check:checked');
-        const allBoxes = document.querySelectorAll('#history-table tbody tr:not([style*="display:none"]) .row-check');
+        const allBoxes = document.querySelectorAll('#history-table tbody tr[data-status]:not([style*="display:none"]) .row-check');
         const count    = checked.length;
 
         document.getElementById('selected-count').textContent = count;
         document.getElementById('selection-bar').classList.toggle('visible', count > 0);
-        document.getElementById('btn-delete-selected').disabled = count === 0;
+        document.getElementById('btn-hide-selected').disabled = count === 0;
 
         document.querySelectorAll('.row-check').forEach(cb => {
             cb.closest('tr').classList.toggle('selected-row', cb.checked);
@@ -311,40 +445,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         document.getElementById('check-all').checked = false;
         updateSelection();
     }
-
-    // ── Live search ───────────────────────────────────────────────────────────
-    document.getElementById('search-input').addEventListener('input', function () {
-        const q    = this.value.toLowerCase().trim();
-        let visible = 0;
-
-        document.querySelectorAll('#history-table tbody tr[data-search]').forEach(row => {
-            const match = !q || row.dataset.search.includes(q);
-            row.style.display = match ? '' : 'none';
-
-            if (match) {
-                visible++;
-                ['col-problem', 'col-mechanic', 'col-date'].forEach(cls => {
-                    const cell = row.querySelector('.' + cls);
-                    if (!cell) return;
-                    const raw  = cell.dataset.raw ?? (cell.dataset.raw = cell.textContent);
-                    if (q) {
-                        cell.innerHTML = raw.replace(
-                            new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'gi'),
-                            '<mark>$1</mark>'
-                        );
-                    } else {
-                        cell.textContent = raw;
-                    }
-                });
-            } else {
-                const cb = row.querySelector('.row-check');
-                if (cb) { cb.checked = false; }
-            }
-        });
-
-        document.getElementById('result-count').textContent = visible + ' record(s) found.';
-        updateSelection();
-    });
 </script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

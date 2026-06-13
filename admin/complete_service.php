@@ -25,7 +25,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_item'])) {
     $price    = isset($_POST['price']) ? (float) $_POST['price'] : 0;
 
     if ($itemName && $price > 0) {
-        // Get or create service record
         $stmt = $pdo->prepare('SELECT id FROM services WHERE request_id = :rid');
         $stmt->execute([':rid' => $reqId]);
         $svc = $stmt->fetch();
@@ -41,7 +40,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_item'])) {
         $pdo->prepare('INSERT INTO service_items (service_id, item_name, price) VALUES (:sid, :in, :p)')
             ->execute([':sid' => $serviceId, ':in' => $itemName, ':p' => $price]);
 
-        // Recalculate total
         $tot = $pdo->prepare('SELECT SUM(si.price) AS t FROM service_items si WHERE si.service_id = :sid');
         $tot->execute([':sid' => $serviceId]);
         $total = $tot->fetchColumn();
@@ -56,17 +54,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_item'])) {
 
 // ── Handle: Delete Item ───────────────────────────────────────────────────────
 if (isset($_GET['delete_item'], $_GET['id']) && ctype_digit($_GET['delete_item'])) {
-    $itemId   = (int) $_GET['delete_item'];
-    $backId   = (int) $_GET['id'];
+    $itemId = (int) $_GET['delete_item'];
+    $backId = (int) $_GET['id'];
 
-    // Find the service_id before deleting
     $row = $pdo->prepare('SELECT service_id FROM service_items WHERE id = :id');
     $row->execute([':id' => $itemId]);
     $serviceRow = $row->fetch();
 
     $pdo->prepare('DELETE FROM service_items WHERE id = :id')->execute([':id' => $itemId]);
 
-    // Recalculate total
     if ($serviceRow) {
         $tot = $pdo->prepare('SELECT SUM(price) FROM service_items WHERE service_id = :sid');
         $tot->execute([':sid' => $serviceRow['service_id']]);
@@ -90,7 +86,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_item'])) {
         $pdo->prepare('UPDATE service_items SET item_name = :n, price = :p WHERE id = :id')
             ->execute([':n' => $itemName, ':p' => $price, ':id' => $itemId]);
 
-        // Recalculate total for the service
         $svc = $pdo->prepare('SELECT s.id FROM services s JOIN service_items si ON si.service_id = s.id WHERE si.id = :iid');
         $svc->execute([':iid' => $itemId]);
         $serviceRow = $svc->fetch();
@@ -107,7 +102,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_item'])) {
     exit;
 }
 
-// ── Handle: Finalize / Complete Service ──────────────────────────────────────
+// ── Handle: Finalize / Complete Service ───────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalize_service'])) {
     $reqId       = (int) ($_POST['request_id'] ?? 0);
     $serviceName = trim($_POST['service_name'] ?? '');
@@ -115,7 +110,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalize_service'])) 
     if (!$serviceName) {
         $error = 'Please enter a service name before finalizing.';
     } else {
-        // Ensure service record exists and has a name
+
+        // ── 1. Ensure service record exists with a name ───────────────────────
         $stmt = $pdo->prepare('SELECT id FROM services WHERE request_id = :rid');
         $stmt->execute([':rid' => $reqId]);
         $svc = $stmt->fetch();
@@ -130,36 +126,115 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalize_service'])) 
             $serviceId = $pdo->lastInsertId();
         }
 
-        // Calculate total from service items
+        // ── 2. Calculate total from service items ─────────────────────────────
         $totStmt = $pdo->prepare('SELECT SUM(price) AS total FROM service_items WHERE service_id = :sid');
         $totStmt->execute([':sid' => $serviceId]);
-        $totRow = $totStmt->fetch();
-        $totalAmount = (float)($totRow['total'] ?? 0);
+        $totalAmount = (float)($totStmt->fetchColumn() ?? 0);
 
-        // Update service with calculated total
         $pdo->prepare('UPDATE services SET total_amount = :total WHERE id = :id')
             ->execute([':total' => $totalAmount, ':id' => $serviceId]);
 
-        // Get mechanic ID before marking as completed
-        $mechStmt = $pdo->prepare('SELECT mechanic_id, user_id FROM requests WHERE id = :id');
-        $mechStmt->execute([':id' => $reqId]);
-        $reqData = $mechStmt->fetch();
-        $mechanicId = $reqData['mechanic_id'] ?? null;
-        $userId = $reqData['user_id'] ?? null;
-        
-        // Mark request completed
+        // ── 3. Load full request snapshot before status change ────────────────
+        $snapStmt = $pdo->prepare(
+            'SELECT r.*,
+                    COALESCE(u.full_name,  w.full_name)  AS customer_name,
+                    COALESCE(u.phone,      w.phone)       AS customer_phone,
+                    m.name                                AS mechanic_name
+             FROM requests r
+             LEFT JOIN users              u  ON r.user_id    = u.id
+             LEFT JOIN walkin_customers   w  ON r.walkin_id  = w.id
+             LEFT JOIN mechanics          m  ON r.mechanic_id = m.id
+             WHERE r.id = :id'
+        );
+        $snapStmt->execute([':id' => $reqId]);
+        $snap = $snapStmt->fetch();
+
+        // ── 4. Load service items snapshot ────────────────────────────────────
+        $itemsStmt = $pdo->prepare('SELECT item_name, price FROM service_items WHERE service_id = :sid');
+        $itemsStmt->execute([':sid' => $serviceId]);
+        $itemsSnapshot = $itemsStmt->fetchAll();
+
+        // ── 5. Mark request as completed ──────────────────────────────────────
+        $completedAt = date('Y-m-d H:i:s');
         $pdo->prepare('UPDATE requests SET status = :s WHERE id = :id')
             ->execute([':s' => 'completed', ':id' => $reqId]);
-        
-        // Update mechanic status back to available
-        if ($mechanicId) {
+
+        // ── 6. Free up mechanic ───────────────────────────────────────────────
+        if ($snap['mechanic_id']) {
             $pdo->prepare('UPDATE mechanics SET status = "available" WHERE id = :id')
-                ->execute([':id' => $mechanicId]);
+                ->execute([':id' => $snap['mechanic_id']]);
         }
 
-        // Notify customer
-        if ($userId) {
-            createNotification($userId, 'invoice', 'Invoice Ready', 'Your service invoice is ready.', $reqId);
+        // ── 7. Insert into history_records ────────────────────────────────────
+        $pdo->prepare(
+            'INSERT INTO history_records (
+                request_id,
+                user_id,        walkin_id,
+                customer_name,  customer_phone,
+                mechanic_id,    mechanic_name,
+                problem_type,   description,
+                image,          latitude,       longitude,
+                diagnosis,
+                status,         rejection_reason,
+                total_amount,
+                request_created_at,
+                completed_at
+             ) VALUES (
+                :request_id,
+                :user_id,       :walkin_id,
+                :customer_name, :customer_phone,
+                :mechanic_id,   :mechanic_name,
+                :problem_type,  :description,
+                :image,         :latitude,      :longitude,
+                :diagnosis,
+                "completed",    NULL,
+                :total_amount,
+                :request_created_at,
+                :completed_at
+             )'
+        )->execute([
+            ':request_id'         => $reqId,
+            ':user_id'            => $snap['user_id'],
+            ':walkin_id'          => $snap['walkin_id'],
+            ':customer_name'      => $snap['customer_name'],
+            ':customer_phone'     => $snap['customer_phone'],
+            ':mechanic_id'        => $snap['mechanic_id'],
+            ':mechanic_name'      => $snap['mechanic_name'],
+            ':problem_type'       => $snap['problem_type'],
+            ':description'        => $snap['description'],
+            ':image'              => $snap['image'],
+            ':latitude'           => $snap['latitude'],
+            ':longitude'          => $snap['longitude'],
+            ':diagnosis'          => $snap['diagnosis'],
+            ':total_amount'       => $totalAmount,
+            ':request_created_at' => $snap['created_at'],
+            ':completed_at'       => $completedAt,
+        ]);
+
+        $historyId = $pdo->lastInsertId();
+
+        // ── 8. Insert snapshot of service items into history_service_items ────
+        $itemInsert = $pdo->prepare(
+            'INSERT INTO history_service_items (history_id, item_name, price)
+             VALUES (:hid, :item_name, :price)'
+        );
+        foreach ($itemsSnapshot as $item) {
+            $itemInsert->execute([
+                ':hid'       => $historyId,
+                ':item_name' => $item['item_name'],
+                ':price'     => $item['price'],
+            ]);
+        }
+
+        // ── 9. Notify customer ────────────────────────────────────────────────
+        if ($snap['user_id']) {
+            createNotification(
+                $snap['user_id'],
+                'invoice',
+                'Invoice Ready',
+                'Your service invoice is ready.',
+                $reqId
+            );
         }
 
         header('Location: ' . getBasePath() . 'admin/history.php');
@@ -170,7 +245,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['finalize_service'])) 
 // ── Load request data ─────────────────────────────────────────────────────────
 if ($requestId) {
     $stmt = $pdo->prepare(
-        'SELECT r.*, 
+        'SELECT r.*,
                 u.full_name  AS customer_name,
                 u.email      AS customer_email,
                 u.phone      AS customer_phone,
@@ -180,9 +255,9 @@ if ($requestId) {
                 wc.address   AS walkin_address,
                 m.name       AS mechanic_name
          FROM requests r
-         LEFT JOIN users         u  ON r.user_id   = u.id
-         LEFT JOIN walkin_customers wc ON r.walkin_id  = wc.id
-         LEFT JOIN mechanics     m  ON r.mechanic_id = m.id
+         LEFT JOIN users              u  ON r.user_id   = u.id
+         LEFT JOIN walkin_customers   wc ON r.walkin_id  = wc.id
+         LEFT JOIN mechanics          m  ON r.mechanic_id = m.id
          WHERE r.id = :id'
     );
     $stmt->execute([':id' => $requestId]);
@@ -241,7 +316,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
     <?php else: ?>
 
     <style>
-        /* ── Info grid ─────────────────────────── */
         .info-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -264,7 +338,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .info-box p { margin: 4px 0; font-size: 0.9rem; color: #333; }
         .info-box p strong { color: #555; }
 
-        /* ── Items table ───────────────────────── */
         .items-section {
             background: #f9f9f9;
             border: 1px solid #e8e8e8;
@@ -272,11 +345,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
             padding: 16px;
             margin-bottom: 20px;
         }
-        .items-section h4 {
-            margin: 0 0 14px 0;
-            font-size: 1rem;
-            color: var(--charcoal);
-        }
+        .items-section h4 { margin: 0 0 14px 0; font-size: 1rem; color: var(--charcoal); }
+
         .item-row {
             display: flex;
             align-items: center;
@@ -289,7 +359,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .item-row .item-price { width: 80px; text-align: right; color: var(--safety-orange); font-weight: 600; font-size: 0.9rem; }
         .item-row .item-actions { display: flex; gap: 6px; }
 
-        /* Edit mode inputs */
         .item-row.editing .item-name-display,
         .item-row.editing .item-price-display,
         .item-row.editing .btn-edit { display: none; }
@@ -300,7 +369,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .item-name-input  { flex: 1; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem; }
         .item-price-input { width: 80px; padding: 5px 8px; border: 1px solid #ccc; border-radius: 4px; font-size: 0.85rem; }
 
-        /* ── Add item form ─────────────────────── */
         .add-item-form {
             display: flex;
             gap: 8px;
@@ -313,7 +381,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .add-item-form button { padding: 7px 14px; background: var(--safety-orange); color: #fff; border: none; border-radius: 5px; cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
         .add-item-form button:hover { background: #e55a00; }
 
-        /* ── Total bar ─────────────────────────── */
         .total-bar {
             display: flex;
             justify-content: space-between;
@@ -327,7 +394,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         }
         .total-bar .total-amount { font-size: 1.3rem; font-weight: 700; color: var(--safety-orange); }
 
-        /* ── Finalize form ─────────────────────── */
         .finalize-form {
             background: #f9f9f9;
             border: 1px solid #e8e8e8;
@@ -343,7 +409,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
     </style>
 
     <?php
-        // Resolve customer info
         $custName    = $request['customer_name']  ?? $request['walkin_name']  ?? '—';
         $custEmail   = $request['customer_email'] ?? $request['walkin_email'] ?? '—';
         $custPhone   = $request['customer_phone'] ?? $request['walkin_phone'] ?? '—';
@@ -351,7 +416,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         $custType    = $request['user_id'] ? 'Registered Customer' : 'Walk-in Customer';
     ?>
 
-    <!-- ── Customer & Request Info ──────────────────────────────── -->
     <div class="info-grid">
         <div class="info-box">
             <h4>Customer Info</h4>
@@ -373,7 +437,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         </div>
     </div>
 
-    <!-- ── Service Items ────────────────────────────────────────── -->
     <div class="items-section">
         <h4>Service Items</h4>
 
@@ -382,7 +445,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         <?php else: ?>
             <?php foreach ($existingItems as $item): ?>
                 <div class="item-row" id="item-row-<?php echo $item['id']; ?>">
-                    <!-- Display mode -->
                     <span class="item-name item-name-display"><?php echo e($item['item_name']); ?></span>
                     <span class="item-price item-price-display">$<?php echo number_format((float)$item['price'], 2); ?></span>
                     <div class="item-actions">
@@ -392,13 +454,11 @@ require_once __DIR__ . '/../includes/sidebar.php';
                            class="btn" style="padding:4px 10px;font-size:0.8rem;background:#d9534f;color:#fff;"
                            onclick="return confirm('Delete this item?');">Delete</a>
                     </div>
-
-                    <!-- Edit mode (inline form) -->
                     <form method="post" style="display:contents;">
                         <input type="hidden" name="request_id" value="<?php echo $requestId; ?>">
-                        <input type="hidden" name="item_id" value="<?php echo $item['id']; ?>">
-                        <input type="text"   name="item_name" class="item-name-input"  value="<?php echo e($item['item_name']); ?>" required>
-                        <input type="number" name="price"     class="item-price-input" value="<?php echo (float)$item['price']; ?>" step="0.01" min="0" required>
+                        <input type="hidden" name="item_id"    value="<?php echo $item['id']; ?>">
+                        <input type="text"   name="item_name"  class="item-name-input"  value="<?php echo e($item['item_name']); ?>" required>
+                        <input type="number" name="price"      class="item-price-input" value="<?php echo (float)$item['price']; ?>" step="0.01" min="0" required>
                         <div class="item-actions">
                             <button type="submit" name="update_item" class="btn btn-save btn-primary"
                                     style="padding:4px 10px;font-size:0.8rem;">Save</button>
@@ -411,7 +471,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
             <?php endforeach; ?>
         <?php endif; ?>
 
-        <!-- Add new item -->
         <form method="post" class="add-item-form">
             <input type="hidden" name="request_id" value="<?php echo $requestId; ?>">
             <input type="text"   name="item_name" placeholder="Item name (e.g., Battery)" required>
@@ -420,13 +479,11 @@ require_once __DIR__ . '/../includes/sidebar.php';
         </form>
     </div>
 
-    <!-- ── Auto-calculated Total ─────────────────────────────────── -->
     <div class="total-bar">
         <span>Total Amount (from items)</span>
         <span class="total-amount">$<?php echo number_format($itemsTotal, 2); ?></span>
     </div>
 
-    <!-- ── Finalize Form ─────────────────────────────────────────── -->
     <form method="post" class="finalize-form">
         <input type="hidden" name="request_id" value="<?php echo $requestId; ?>">
         <label>
@@ -446,14 +503,13 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 <?php echo empty($existingItems) ? 'disabled style="opacity:0.5;cursor:not-allowed;"' : ''; ?>>
                 ✓ Complete Service &amp; Generate Invoice
             </button>
-            <a href="<?php echo getBasePath(); ?>admin/active_jobs.php" class="btn">Cancel</a>
+           <!-- check it is for  cancel button  <a href="<php echo getBasePath(); >admin/active_jobs.php" class="btn">Cancel</a>-->
         </div>
     </form>
 
     <script>
         function toggleEdit(itemId) {
-            const row = document.getElementById('item-row-' + itemId);
-            row.classList.toggle('editing');
+            document.getElementById('item-row-' + itemId).classList.toggle('editing');
         }
     </script>
 

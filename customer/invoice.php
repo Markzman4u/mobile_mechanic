@@ -13,51 +13,34 @@ if (isAdmin()) {
 $pdo = getPDO();
 $userId = $_SESSION['user_id'] ?? null;
 
-$requestId = isset($_GET['id']) && ctype_digit($_GET['id']) ? (int) $_GET['id'] : null;
+$historyId = isset($_GET['history_id']) && ctype_digit($_GET['history_id']) ? (int) $_GET['history_id'] : null;
 
-if (!$requestId) {
+if (!$historyId) {
     header('Location: ' . getBasePath() . 'customer/dashboard.php');
     exit;
 }
 
-// ── Load request — enforce ownership so customers can't see each other's invoices ──
-$stmt = $pdo->prepare(
-    "SELECT r.*,
-            u.full_name  AS customer_name,
-            u.email      AS customer_email,
-            u.phone      AS customer_phone,
-            m.name       AS mechanic_name
-     FROM requests r
-     LEFT JOIN users     u ON r.user_id    = u.id
-     LEFT JOIN mechanics m ON r.mechanic_id = m.id
-     WHERE r.id = :id
-       AND r.user_id = :uid
-       AND r.status = 'completed'"
-);
-$stmt->execute([':id' => $requestId, ':uid' => $userId]);
+// ── Load history record — enforce ownership so customers can't see each other's invoices ──
+$stmt = $pdo->prepare('SELECT * FROM history_records WHERE id = :hid AND user_id = :uid');
+$stmt->execute([':hid' => $historyId, ':uid' => $userId]);
 $request = $stmt->fetch();
 
 if (!$request) {
-    // Either not found, not theirs, or not completed yet
+    // Either not found or not theirs
     header('Location: ' . getBasePath() . 'customer/dashboard.php');
     exit;
 }
 
-// ── Load service + items ──────────────────────────────────────────────────────
-$stmt = $pdo->prepare('SELECT * FROM services WHERE request_id = :rid LIMIT 1');
-$stmt->execute([':rid' => $requestId]);
-$service = $stmt->fetch();
+// ── Load service items from history ───────────────────────────────────────────────
+$stmt = $pdo->prepare('SELECT * FROM history_service_items WHERE history_id = :hid ORDER BY id ASC');
+$stmt->execute([':hid' => $historyId]);
+$items = $stmt->fetchAll();
 
-$items = [];
-$total = 0;
-if ($service) {
-    $stmt = $pdo->prepare('SELECT * FROM service_items WHERE service_id = :sid ORDER BY id ASC');
-    $stmt->execute([':sid' => $service['id']]);
-    $items = $stmt->fetchAll();
-    $total = array_sum(array_column($items, 'price'));
-}
+$total = array_sum(array_column($items, 'price'));
+$service = ['created_at' => $request['completed_at']];
 
-$invoiceNumber = 'INV-' . date('Y') . '-' . str_pad($requestId, 4, '0', STR_PAD_LEFT);
+// Invoice number formatted as INV-YEAR-REQUEST_ID
+$invoiceNumber = 'INV-' . date('Y') . '-' . str_pad($request['request_id'], 4, '0', STR_PAD_LEFT);
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/navbar.php';
@@ -67,7 +50,7 @@ require_once __DIR__ . '/../includes/navbar.php';
 
     <!-- ── Top bar ────────────────────────────────────────────────────── -->
     <div class="no-print" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px;">
-        <a href="<?php echo getBasePath(); ?>customer/customer_history.php?id=<?php echo $requestId; ?>" class="btn">← Back</a>
+        <a href="<?php echo getBasePath(); ?>customer/notifications.php" class="btn">← Back</a>
         <button onclick="window.print()" class="btn btn-primary">🖨 Print Invoice</button>
     </div>
 
@@ -189,7 +172,7 @@ require_once __DIR__ . '/../includes/navbar.php';
             <div class="inv-meta">
                 <div class="inv-number"><?php echo $invoiceNumber; ?></div>
                 <div class="inv-date">
-                    <?php echo date('F d, Y', strtotime($service['created_at'] ?? $request['created_at'])); ?>
+                    <?php echo date('F d, Y', strtotime($request['completed_at'])); ?>
                 </div>
                 <div style="margin-top:6px;">
                     <span class="status status-completed">Completed</span>
@@ -212,13 +195,12 @@ require_once __DIR__ . '/../includes/navbar.php';
                 <h5>Billed To</h5>
                 <p><?php echo e($request['customer_name'] ?? '—'); ?></p>
                 <p><?php echo e($request['customer_phone'] ?? '—'); ?></p>
-                <p><?php echo e($request['customer_email'] ?? '—'); ?></p>
             </div>
             <div class="inv-info-box">
                 <h5>Service Summary</h5>
                 <p><strong>Problem:</strong> <?php echo e($request['problem_type']); ?></p>
-                <p><strong>Service:</strong> <?php echo e($service['service_name'] ?? '—'); ?></p>
-                <p><strong>Date:</strong> <?php echo date('M d, Y', strtotime($request['created_at'])); ?></p>
+                <p><strong>Mechanic:</strong> <?php echo e($request['mechanic_name'] ?? '—'); ?></p>
+                <p><strong>Date:</strong> <?php echo date('M d, Y', strtotime($request['request_created_at'])); ?></p>
             </div>
         </div>
 
