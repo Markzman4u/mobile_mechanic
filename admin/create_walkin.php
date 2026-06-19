@@ -13,7 +13,14 @@ $pdo = getPDO();
 $message = '';
 $error = '';
 
-$mechanics = $pdo->query('SELECT id, name FROM mechanics WHERE status = "available" ORDER BY name ASC')->fetchAll();
+// Exclude disabled and soft-deleted mechanics
+$mechanics = $pdo->query(
+    'SELECT id, name FROM mechanics
+     WHERE status = "available"
+     AND is_disabled = FALSE
+     AND is_deleted  = FALSE
+     ORDER BY name ASC'
+)->fetchAll();
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $full_name    = trim($_POST['full_name'] ?? '');
@@ -52,7 +59,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $pdo->prepare('UPDATE mechanics SET status = "busy" WHERE id = :id')
                 ->execute([':id' => $mechanic_id]);
 
-            // Redirect to active jobs after successful creation
             header('Location: ' . getBasePath() . 'admin/active_jobs.php');
             exit;
 

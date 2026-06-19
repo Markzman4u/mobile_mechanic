@@ -23,7 +23,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                 session_regenerate_id(true);
                 $_SESSION['user_id'] = $user['id'];
                 $_SESSION['role'] = $user['role'];
-                // redirect by role
                 header('Location: ' . getBasePath() . ($user['role'] === 'admin' ? 'admin/dashboard.php' : 'customer/dashboard.php'));
                 exit;
             }
@@ -48,32 +47,42 @@ require_once __DIR__ . '/../includes/header.php';
                 <strong>Success!</strong> <?php echo e($success); ?>
             </div>
         <?php endif; ?>
-        
+
         <?php if ($error): ?>
             <div style="background:#fff6eb;border:1px solid #ffb84d;border-left:4px solid var(--safety-orange);color:#b35b00;padding:12px;border-radius:6px;margin-bottom:16px;">
                 <strong>Error:</strong> <?php echo e($error); ?>
             </div>
         <?php endif; ?>
-        
+
         <form method="post" action="<?php echo getBasePath(); ?>auth/login.php" novalidate>
             <label>Email Address
                 <input type="email" name="email" value="<?php echo e($_POST['email'] ?? ''); ?>" placeholder="your@email.com" required>
             </label>
-            
+
             <label>Password
                 <input type="password" name="password" placeholder="Enter your password" required>
             </label>
-            
+
             <button class="btn btn-primary" type="submit" style="width:100%;padding:12px;font-size:1rem;font-weight:600;margin-bottom:16px;">Sign In</button>
-            
+
             <div style="text-align:center;border-top:1px solid #eee;padding-top:16px;">
                 <p class="muted">Don't have an account? <a href="<?php echo getBasePath(); ?>auth/register.php" style="color:var(--safety-orange);text-decoration:none;font-weight:600;">Create one</a></p>
             </div>
         </form>
+
+        <!-- Mechanic portal link -->
+        <div style="margin-top:16px;padding-top:16px;border-top:1px solid #f0f0f0;text-align:center;">
+            <p style="margin:0 0 6px 0;font-size:13px;color:#aaa;">Are you a mechanic?</p>
+            <a href="<?php echo getBasePath(); ?>mechanic/login.php"
+               style="font-size:13px;font-weight:600;color:var(--safety-orange,#ff6600);text-decoration:none;">
+                🔧 Sign in as Mechanic →
+            </a>
+        </div>
+
     </div>
-    
+
     <p style="text-align:center;color:var(--muted);margin-top:24px;font-size:0.9rem;">
         Mobile Mechanic © 2026
     </p>
 </main>
-<?php require_once __DIR__ . '/../includes/footer.php';
+<?php require_once __DIR__ . '/../includes/footer.php'; ?>

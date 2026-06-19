@@ -25,3 +25,21 @@ function isAdmin()
 {
     return (isset($_SESSION['role']) && $_SESSION['role'] === 'admin');
 }
+
+function isMechanic()
+{
+    return (isset($_SESSION['mechanic_id']) && $_SESSION['mechanic_id'] !== null);
+}
+
+function requireMechanicLogin()
+{
+    if (!isMechanic()) {
+        header('Location: ' . getBasePath() . 'mechanic/login.php');
+        exit;
+    }
+}
+
+function getMechanicId()
+{
+    return $_SESSION['mechanic_id'] ?? null;
+}

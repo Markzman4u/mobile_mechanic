@@ -14,6 +14,13 @@ $adminLinks = [
     ['label' => 'Manage Mechanics', 'href' => $basePath . 'admin/manage_mechanics.php'],
     ['label' => 'Register Walk-in', 'href' => $basePath . 'admin/create_walkin.php'],
     ['label' => 'History', 'href' => $basePath . 'admin/history.php'],
+    ['label' => 'Settings', 'href' => $basePath . 'admin/settings.php'],
+];
+
+$mechanicLinks = [
+    ['label' => 'Dashboard', 'href' => $basePath . 'mechanic/dashboard.php'],
+    ['label' => 'History', 'href' => $basePath . 'mechanic/history.php'],
+    ['label' => 'Settings', 'href' => $basePath . 'mechanic/mechanic_settings.php'],
 ];
 
 $customerLinks = [
@@ -21,10 +28,19 @@ $customerLinks = [
     ['label' => 'Request Service', 'href' => $basePath . 'customer/request_service.php'],
     ['label' => 'Track Service', 'href' => $basePath . 'customer/track_service.php'],
     ['label' => 'History', 'href' => $basePath . 'customer/customer_history.php'],
+    ['label' => 'Settings', 'href' => $basePath . 'customer/settings.php'],
 ];
 
-$links = isAdmin() ? $adminLinks : $customerLinks;
-$sidebarTitle = isAdmin() ? 'Admin Menu' : 'Customer Menu';
+if (isAdmin()) {
+    $links = $adminLinks;
+    $sidebarTitle = 'Admin Menu';
+} elseif (isMechanic()) {
+    $links = $mechanicLinks;
+    $sidebarTitle = 'Mechanic Menu';
+} else {
+    $links = $customerLinks;
+    $sidebarTitle = 'Customer Menu';
+}
 ?>
 <div class="page-layout">
 <aside>

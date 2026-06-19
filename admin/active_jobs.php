@@ -47,7 +47,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_item'])) {
         $pdo->prepare('INSERT INTO service_items (service_id, item_name, price) VALUES (:sid, :name, :price)')
             ->execute([':sid' => $serviceId, ':name' => $itemName, ':price' => $price]);
 
-        // Redirect to avoid form re-submission on page refresh
         header('Location: ' . $_SERVER['PHP_SELF'] . '?expand=' . $expandJobId . '&msg=' . urlencode('Item added successfully.'));
         exit;
     }
@@ -76,7 +75,6 @@ if (isset($_GET['delete_item']) && ctype_digit($_GET['delete_item'])) {
     $pdo->prepare('DELETE FROM service_items WHERE id = :id')->execute([':id' => $itemId]);
     $message = 'Item deleted successfully.';
 
-    // Redirect to keep expand state in URL, avoid re-delete on refresh
     header('Location: ' . $_SERVER['PHP_SELF'] . '?expand=' . $expandJobId . '&msg=' . urlencode($message));
     exit;
 }
@@ -85,7 +83,7 @@ if (isset($_GET['delete_item']) && ctype_digit($_GET['delete_item'])) {
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
     $requestId = (int) $_POST['request_id'];
     $newStatus = $_POST['new_status'] ?? '';
-    $expandJobId = $requestId; // keep row open even on status change
+    $expandJobId = $requestId;
 
     $validStatuses = ['assigned', 'in_progress', 'completed'];
     if (in_array($newStatus, $validStatuses)) {
@@ -120,19 +118,21 @@ function getServiceItemsForRequest($pdo, $requestId) {
     return $stmt->fetchAll();
 }
 
-// ── Load active jobs (includes walk-in customers) ─────────────────────────
+// ── Load active jobs ───────────────────────────────────────────────────────
 $jobs = $pdo->query(
     'SELECT r.id,
+            r.mechanic_id,
             COALESCE(u.full_name, w.full_name, "Unknown") AS customer_name,
             CASE WHEN r.walkin_id IS NOT NULL THEN 1 ELSE 0 END AS is_walkin,
             r.problem_type,
+            r.diagnosis,
             m.name AS mechanic_name,
             r.status,
             r.created_at
      FROM requests r
-     LEFT JOIN users u        ON r.user_id   = u.id
-     LEFT JOIN walkin_customers w ON r.walkin_id = w.id
-     LEFT JOIN mechanics m    ON r.mechanic_id = m.id
+     LEFT JOIN users u            ON r.user_id   = u.id
+     LEFT JOIN walkin_customers w ON r.walkin_id  = w.id
+     LEFT JOIN mechanics m        ON r.mechanic_id = m.id
      WHERE r.status IN ("assigned", "in_progress")
      ORDER BY r.created_at DESC'
 )->fetchAll();
@@ -193,7 +193,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
 
             .total-line { padding-top: 12px; border-top: 1px solid #ddd; color: var(--charcoal); font-weight: 700; font-size: 0.95rem; }
 
-            /* ── Walk-in badge in table ─────────────── */
+            /* ── Walk-in badge ──────────────────────────────────────────── */
             .badge-walkin {
                 display: inline-block;
                 background: #fff3e0;
@@ -206,6 +206,75 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 vertical-align: middle;
                 font-weight: 600;
             }
+
+            /* ── Clickable cell links ────────────────────────────────────── */
+            .cell-link {
+                color: inherit;
+                text-decoration: none;
+                font-weight: 600;
+            }
+            .cell-link:hover {
+                color: var(--safety-orange, #ff6600);
+                text-decoration: underline;
+            }
+            .cell-link-mechanic {
+                color: #3a5bbd;
+            }
+            .cell-link-mechanic:hover {
+                color: var(--safety-orange, #ff6600);
+            }
+
+            /* ── Diagnosis column ───────────────────────────────────────── */
+            th.col-diagnosis,
+            td.col-diagnosis {
+                width: 150px;
+                min-width: 110px;
+                max-width: 150px;
+            }
+
+            .diagnosis-cell {
+                display: -webkit-box;
+                -webkit-line-clamp: 3;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+                font-size: 0.82rem;
+                color: #555;
+                line-height: 1.4;
+                word-break: break-word;
+                white-space: normal;
+                cursor: default;
+            }
+            .diagnosis-cell.empty {
+                color: #bbb;
+                font-style: italic;
+            }
+
+            /* ── Actions column ─────────────────────────────────────────── */
+            /* Stack select + button vertically so neither gets cut off      */
+            th.col-actions,
+            td.col-actions {
+                width: 130px;
+                min-width: 130px;
+            }
+
+            .action-form {
+                display: flex;
+                flex-direction: column;
+                gap: 5px;
+            }
+            .action-form select {
+                width: 100%;
+                padding: 4px 6px;
+                font-size: 0.82rem;
+                border: 1px solid #ccc;
+                border-radius: 4px;
+                box-sizing: border-box;
+            }
+            .action-form button {
+                width: 100%;
+                padding: 4px 0;
+                font-size: 0.82rem;
+            }
         </style>
 
         <table>
@@ -216,47 +285,83 @@ require_once __DIR__ . '/../includes/sidebar.php';
                     <th>Customer</th>
                     <th>Problem</th>
                     <th>Mechanic</th>
+                    <th class="col-diagnosis">Diagnosis</th>
                     <th>Status</th>
                     <th>Started</th>
-                    <th>Actions</th>
+                    <th class="col-actions">Actions</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($jobs)): ?>
                     <tr>
-                        <td colspan="8" style="text-align:center;color:var(--muted);padding:20px;">No active jobs found.</td>
+                        <td colspan="9" style="text-align:center;color:var(--muted);padding:20px;">No active jobs found.</td>
                     </tr>
                 <?php else: ?>
                     <?php foreach ($jobs as $job):
                         $items      = getServiceItemsForRequest($pdo, $job['id']);
                         $totalItems = array_sum(array_column($items, 'price'));
                         $isExpanded = ($expandJobId === $job['id']);
+                        $diagTooltip = !empty($job['diagnosis']) ? e($job['diagnosis']) : '';
                     ?>
                         <!-- ── Job Row ──────────────────────────────────── -->
                         <tr class="job-row-expandable" onclick="toggleItems(this)" data-job-id="<?php echo $job['id']; ?>">
                             <td><span class="expand-icon <?php echo $isExpanded ? 'expanded' : ''; ?>">▶</span></td>
                             <td><?php echo e($job['id']); ?></td>
-                            <td>
-                                <?php echo e($job['customer_name']); ?>
+
+                            <!-- Customer name → request detail page -->
+                            <td onclick="event.stopPropagation();">
+                                <a href="<?php echo getBasePath(); ?>admin/request_detail.php?id=<?php echo (int)$job['id']; ?>"
+                                   class="cell-link"
+                                   title="View request details">
+                                    <?php echo e($job['customer_name']); ?>
+                                </a>
                                 <?php if ($job['is_walkin']): ?>
                                     <span class="badge-walkin">Walk-in</span>
                                 <?php endif; ?>
                             </td>
+
                             <td><?php echo e($job['problem_type']); ?></td>
-                            <td><?php echo e($job['mechanic_name']); ?></td>
+
+                            <!-- Mechanic name → track mechanic page -->
+                            <td onclick="event.stopPropagation();">
+                                <?php if (!empty($job['mechanic_name']) && !empty($job['mechanic_id'])): ?>
+                                    <a href="<?php echo getBasePath(); ?>admin/track_mechanics.php?mechanic_id=<?php echo (int)$job['mechanic_id']; ?>"
+                                       class="cell-link cell-link-mechanic"
+                                       title="Track <?php echo e($job['mechanic_name']); ?> on map">
+                                        <?php echo e($job['mechanic_name']); ?>
+                                        <span style="font-size:.72rem;opacity:.7;">📍</span>
+                                    </a>
+                                <?php else: ?>
+                                    <span style="color:#bbb;">—</span>
+                                <?php endif; ?>
+                            </td>
+
+                            <!-- Diagnosis — wraps to 3 lines max, full text on hover -->
+                            <td class="col-diagnosis" onclick="event.stopPropagation();">
+                                <?php if (!empty($job['diagnosis'])): ?>
+                                    <span class="diagnosis-cell" title="<?php echo $diagTooltip; ?>">
+                                        <?php echo e($job['diagnosis']); ?>
+                                    </span>
+                                <?php else: ?>
+                                    <span class="diagnosis-cell empty">No diagnosis</span>
+                                <?php endif; ?>
+                            </td>
+
                             <td><span class="status status-<?php echo e($job['status']); ?>"><?php echo statusLabel($job['status']); ?></span></td>
                             <td><?php echo date('M d, g:i A', strtotime($job['created_at'])); ?></td>
-                            <td>
-                                <form method="post" style="display:inline;" onclick="event.stopPropagation();">
+
+                            <!-- Actions — select stacked above button -->
+                            <td class="col-actions" onclick="event.stopPropagation();">
+                                <form method="post" class="action-form">
                                     <input type="hidden" name="request_id" value="<?php echo $job['id']; ?>">
-                                    <select name="new_status" style="padding:4px;font-size:0.85rem;">
-                                        <option value="">Change Status...</option>
+                                    <select name="new_status">
+                                        <option value="">— Status —</option>
                                         <?php if ($job['status'] === 'assigned'): ?>
                                             <option value="in_progress">Start Job</option>
                                         <?php endif; ?>
-                                        <option value="completed">Complete Job</option>
+                                        <option value="completed">Complete</option>
                                     </select>
-                                    <button type="submit" name="update_status" class="btn" style="padding:4px 8px;font-size:0.85rem;margin-left:4px;">Update</button>
+                                    <button type="submit" name="update_status" class="btn">Update</button>
                                 </form>
                             </td>
                         </tr>
@@ -264,7 +369,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
                         <!-- ── Items Drawer ────────────────────────────── -->
                         <tr class="items-row" data-job-id="<?php echo $job['id']; ?>"
                             style="display:<?php echo $isExpanded ? 'table-row' : 'none'; ?>;">
-                            <td colspan="8">
+                            <td colspan="9">
                                 <div class="items-section">
                                     <h4 style="margin:0 0 12px 0;">
                                         Service Items — Request #<?php echo e($job['id']); ?>
@@ -288,7 +393,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
                                                                 onclick="toggleEditForm(event, <?php echo $item['id']; ?>)">Edit</button>
                                                         <a href="<?php echo $_SERVER['PHP_SELF']; ?>?delete_item=<?php echo $item['id']; ?>"
                                                            class="item-btn item-btn-delete"
-                                                           onclick="return confirm('Delete this item?');">Delete</a>
+                                                           onclick="return confirm(<?php echo json_encode('Delete this item?'); ?>);">Delete</a>
                                                     </div>
                                                 </div>
                                                 <!-- Inline edit form -->
