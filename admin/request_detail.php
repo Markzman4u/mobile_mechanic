@@ -83,6 +83,13 @@ $custType    = $req['user_name']     ? 'Online Customer' : ($req['walkin_name'] 
 $imgSrc      = !empty($req['image']) ? getBasePath() . $req['image'] : '';
 $hasCoords   = !empty($req['latitude']) && !empty($req['longitude']);
 
+// Resolve vehicle display
+$vehicleMake  = $req['vehicle_make']  ?? '';
+$vehicleModel = $req['vehicle_model'] ?? '';
+$vehicleYear  = $req['vehicle_year']  ?? '';
+$vehicleParts = array_filter([$vehicleMake, $vehicleModel, $vehicleYear ? (string)$vehicleYear : '']);
+$vehicleLabel = !empty($vehicleParts) ? implode(' · ', $vehicleParts) : '—';
+
 $mechanics = $pdo->query(
     'SELECT id, name FROM mechanics WHERE status = "available" ORDER BY name ASC'
 )->fetchAll();
@@ -132,6 +139,20 @@ require_once __DIR__ . '/../includes/sidebar.php';
 .d-row:last-child { border-bottom: none; }
 .d-lbl { font-weight: 600; min-width: 120px; color: #666; flex-shrink: 0; }
 .d-val { color: #222; word-break: break-word; flex: 1; }
+
+/* ── Vehicle badge ───────────────────────────────────────────────────────── */
+.vehicle-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #f5f5f5;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: .85rem;
+    color: #333;
+    font-weight: 500;
+}
 
 /* ── Badges ──────────────────────────────────────────────────────────────── */
 .type-badge {
@@ -425,6 +446,19 @@ require_once __DIR__ . '/../includes/sidebar.php';
         <div class="section-card">
             <div class="section-card-head">Request Info</div>
             <div class="section-card-body">
+
+                <!-- ── Vehicle ───────────────────────────────────────────── -->
+                <div class="d-row">
+                    <span class="d-lbl">Vehicle</span>
+                    <span class="d-val">
+                        <?php if ($vehicleLabel !== '—'): ?>
+                            <span class="vehicle-badge">🚗 <?php echo e($vehicleLabel); ?></span>
+                        <?php else: ?>
+                            <span class="muted" style="font-style:italic;font-size:.85rem;">Not specified</span>
+                        <?php endif; ?>
+                    </span>
+                </div>
+
                 <div class="d-row">
                     <span class="d-lbl">Problem</span>
                     <span class="d-val"><strong><?php echo e($req['problem_type'] ?: '—'); ?></strong></span>

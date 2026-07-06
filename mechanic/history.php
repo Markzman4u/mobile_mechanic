@@ -8,16 +8,13 @@ $pdo        = getPDO();
 $mechanicId = getMechanicId();
 
 // ── Date range filter ─────────────────────────────────────────────────────
-// Day-level inputs, e.g. "2025-01-15" (YYYY-MM-DD)
 $fromDate = trim($_GET['from'] ?? '');
 $toDate   = trim($_GET['to']   ?? '');
 
-// Validate format
 $validDate = '/^\d{4}-\d{2}-\d{2}$/';
 if (!preg_match($validDate, $fromDate)) $fromDate = '';
 if (!preg_match($validDate, $toDate))   $toDate   = '';
 
-// Search
 $search = trim($_GET['search'] ?? '');
 
 // ── Build WHERE ───────────────────────────────────────────────────────────
@@ -41,6 +38,7 @@ if ($search !== '') {
 $stmt = $pdo->prepare(
     "SELECT id, request_id, customer_name,
             problem_type, diagnosis, status,
+            vehicle_make, vehicle_model, vehicle_year,
             request_created_at, completed_at
      FROM history_records
      $where
@@ -106,7 +104,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
     overflow: hidden;
 }
 .filter-group label.spacer {
-    /* Same fixed height as real labels so height is identical — text invisible */
     visibility: hidden;
     pointer-events: none;
 }
@@ -134,10 +131,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
     gap: 6px;
     height: 36px;
 }
-/* Match button box model to the inputs above so heights line up exactly.
-   !important + explicit reset of border/margin/line-height ensures the
-   global .btn / .btn-primary rules (defined in style.css) can't add
-   extra height via border width, margin, or a taller line-height. */
 .filter-actions-row .btn,
 .filter-actions-row .btn-primary {
     height: 36px !important;
@@ -167,9 +160,20 @@ require_once __DIR__ . '/../includes/sidebar.php';
 /* ── Table ───────────────────────────────────────────────────────────────── */
 .hist-table td, .hist-table th { vertical-align: middle; }
 
+/* ── Vehicle badge ───────────────────────────────────────────────────────── */
+.vehicle-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: .8rem;
+    color: #555;
+    white-space: nowrap;
+}
+.vehicle-badge .car-icon { font-size: .9rem; }
+
 /* ── Diagnosis cell ──────────────────────────────────────────────────────── */
 .diag-cell {
-    max-width: 220px;
+    max-width: 200px;
     font-size: .82rem;
     color: #555;
     display: -webkit-box;
@@ -202,7 +206,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
         <?php echo $totalCompleted; ?> completed job<?php echo $totalCompleted !== 1 ? 's' : ''; ?> total.
     </p>
 
-    <!-- ── Filter bar (two independent forms, stacked) ─────────────────── -->
+    <!-- ── Filter bar ───────────────────────────────────────────────────── -->
     <div class="filter-bar">
 
         <!-- Row 1: Date range -->
@@ -285,19 +289,37 @@ require_once __DIR__ . '/../includes/sidebar.php';
             <tr>
                 <th>#</th>
                 <th>Customer</th>
+                <th>Vehicle</th>
                 <th>Problem</th>
                 <th>Diagnosis</th>
                 <th>Completed</th>
             </tr>
         </thead>
         <tbody>
-        <?php foreach ($records as $r): ?>
+        <?php foreach ($records as $r):
+            $vParts = array_filter([
+                $r['vehicle_make']  ?? '',
+                $r['vehicle_model'] ?? '',
+                $r['vehicle_year']  ? (string)$r['vehicle_year'] : '',
+            ]);
+            $vehicleStr = implode(' · ', $vParts);
+        ?>
             <tr>
                 <td style="font-size:.8rem;color:var(--muted,#888);">
                     #<?php echo (int)$r['request_id']; ?>
                 </td>
                 <td>
                     <strong><?php echo e($r['customer_name'] ?: '—'); ?></strong>
+                </td>
+                <td>
+                    <?php if ($vehicleStr): ?>
+                        <span class="vehicle-badge">
+                            <span class="car-icon">🚗</span>
+                            <?php echo e($vehicleStr); ?>
+                        </span>
+                    <?php else: ?>
+                        <span class="muted" style="font-size:.8rem;">Not specified</span>
+                    <?php endif; ?>
                 </td>
                 <td><?php echo e($r['problem_type'] ?: '—'); ?></td>
                 <td>

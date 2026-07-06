@@ -4,7 +4,7 @@ require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/auth.php';
 requireLogin();
 
-if (!isAdmin()) {
+if (!isAdmin() && !isSuperAdmin()) {
     header('Location: ' . getBasePath() . 'customer/dashboard.php');
     exit;
 }
@@ -14,30 +14,45 @@ $pdo = getPDO();
 $historyId = isset($_GET['history_id']) && ctype_digit($_GET['history_id']) ? (int) $_GET['history_id'] : null;
 
 if (!$historyId) {
-    header('Location: ' . getBasePath() . 'admin/history.php');
+    $fallback = isSuperAdmin() ? 'super_admin/history.php' : 'admin/history.php';
+    header('Location: ' . getBasePath() . $fallback);
     exit;
 }
 
-// ── Load history record (permanent source of truth for invoices) ─────────────────
+// ── Load history record (permanent source of truth for invoices) ──────────────
 $stmt = $pdo->prepare('SELECT * FROM history_records WHERE id = :hid');
 $stmt->execute([':hid' => $historyId]);
 $request = $stmt->fetch();
 
 if (!$request) {
-    header('Location: ' . getBasePath() . 'admin/history.php');
+    $fallback = isSuperAdmin() ? 'super_admin/history.php' : 'admin/history.php';
+    header('Location: ' . getBasePath() . $fallback);
     exit;
 }
 
-// ── Load service items from history ───────────────────────────────────────────────
+// ── Load service items from history ──────────────────────────────────────────
 $stmt = $pdo->prepare('SELECT * FROM history_service_items WHERE history_id = :hid ORDER BY id ASC');
 $stmt->execute([':hid' => $historyId]);
 $items = $stmt->fetchAll();
 
-$total = array_sum(array_column($items, 'price'));
+$total   = array_sum(array_column($items, 'price'));
 $service = ['created_at' => $request['completed_at']];
 
 // Invoice number formatted as INV-YEAR-REQUEST_ID
 $invoiceNumber = 'INV-' . date('Y') . '-' . str_pad($request['request_id'], 4, '0', STR_PAD_LEFT);
+
+// ── Resolve vehicle display string ────────────────────────────────────────────
+$vehicleParts = array_filter([
+    $request['vehicle_make']  ?? null,
+    $request['vehicle_model'] ?? null,
+    $request['vehicle_year']  ? (string)$request['vehicle_year'] : null,
+]);
+$vehicleDisplay = !empty($vehicleParts) ? implode(' ', $vehicleParts) : null;
+
+// ── Back link depends on who is viewing ──────────────────────────────────────
+$backLink = isSuperAdmin()
+    ? getBasePath() . 'super_admin/history.php'
+    : getBasePath() . 'admin/history.php';
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/navbar.php';
@@ -49,13 +64,12 @@ require_once __DIR__ . '/../includes/sidebar.php';
     <!-- ── Top action bar (hidden on print) ───────────────────────────── -->
     <div class="no-print" style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;flex-wrap:wrap;gap:10px;">
         <div>
-            <a href="<?php echo getBasePath(); ?>admin/history.php" class="btn" style="margin-right:8px;">← Back to History</a>
+            <a href="<?php echo $backLink; ?>" class="btn" style="margin-right:8px;">← Back to History</a>
         </div>
         <button onclick="window.print()" class="btn btn-primary">🖨 Print Invoice</button>
     </div>
 
     <style>
-        /* ── Invoice wrapper ──────────────── */
         .invoice-wrap {
             max-width: 760px;
             margin: 0 auto;
@@ -63,7 +77,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
             color: #333;
         }
 
-        /* ── Invoice header ───────────────── */
         .inv-header {
             display: flex;
             justify-content: space-between;
@@ -80,7 +93,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .inv-header .inv-meta .inv-number { font-size: 1.1rem; font-weight: 700; color: var(--charcoal, #2d2d2d); }
         .inv-header .inv-meta .inv-date   { color: #777; font-size: 0.85rem; margin-top: 4px; }
 
-        /* ── Info grid ────────────────────── */
         .inv-info-grid {
             display: grid;
             grid-template-columns: 1fr 1fr 1fr;
@@ -98,7 +110,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .inv-info-box p { margin: 3px 0; font-size: 0.88rem; line-height: 1.5; }
         .inv-info-box p strong { color: #555; }
 
-        /* ── Items table ──────────────────── */
         .inv-table { width: 100%; border-collapse: collapse; margin-bottom: 16px; }
         .inv-table thead tr { background: var(--charcoal, #2d2d2d); color: #fff; }
         .inv-table thead th { padding: 10px 14px; text-align: left; font-size: 0.85rem; font-weight: 600; }
@@ -110,11 +121,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .inv-table tfoot tr { background: #f5f5f5; }
         .inv-table tfoot td { padding: 10px 14px; font-size: 0.9rem; }
 
-        /* ── Total bar ────────────────────── */
-        .inv-total-bar {
-            display: flex;
-            justify-content: flex-end;
-        }
+        .inv-total-bar { display: flex; justify-content: flex-end; }
         .inv-total-box {
             background: var(--charcoal, #2d2d2d);
             color: #fff;
@@ -122,10 +129,9 @@ require_once __DIR__ . '/../includes/sidebar.php';
             padding: 14px 24px;
             min-width: 220px;
         }
-        .inv-total-box .label { font-size: 0.85rem; color: #aaa; margin-bottom: 4px; }
+        .inv-total-box .label  { font-size: 0.85rem; color: #aaa; margin-bottom: 4px; }
         .inv-total-box .amount { font-size: 1.6rem; font-weight: 800; color: var(--safety-orange, #ff6600); }
 
-        /* ── Internal notes (admin-only) ───── */
         .inv-internal {
             margin-top: 24px;
             padding: 14px 16px;
@@ -142,7 +148,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         }
         .inv-internal p { margin: 0; font-size: 0.88rem; color: #555; }
 
-        /* ── Footer note ──────────────────── */
         .inv-footer-note {
             margin-top: 28px;
             padding-top: 16px;
@@ -152,7 +157,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
             font-size: 0.8rem;
         }
 
-        /* ── Print styles ─────────────────── */
         @media print {
             .no-print { display: none !important; }
             body, main, .card { background: #fff !important; box-shadow: none !important; padding: 0 !important; margin: 0 !important; }
@@ -199,6 +203,9 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 <p><strong>Request ID:</strong> #<?php echo e($request['request_id']); ?></p>
                 <p><strong>Problem:</strong> <?php echo e($request['problem_type']); ?></p>
                 <p><strong>Date:</strong> <?php echo date('M d, Y', strtotime($request['request_created_at'])); ?></p>
+                <?php if ($vehicleDisplay): ?>
+                    <p><strong>Vehicle:</strong> <?php echo e($vehicleDisplay); ?></p>
+                <?php endif; ?>
             </div>
 
             <div class="inv-info-box">

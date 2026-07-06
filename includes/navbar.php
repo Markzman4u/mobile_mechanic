@@ -9,9 +9,6 @@ if (!function_exists('getUnreadCount')) {
 $currentScript   = basename($_SERVER['SCRIPT_NAME']);
 $isDashboardPage = ($currentScript === 'dashboard.php');
 
-// Mechanic session is keyed by mechanic_id, NOT user_id.
-// isLoggedIn() only checks user_id, so we resolve the mechanic
-// case separately before anything else.
 $mechanicLoggedIn = isset($_SESSION['mechanic_id']);
 ?>
 <nav>
@@ -24,9 +21,11 @@ $mechanicLoggedIn = isset($_SESSION['mechanic_id']);
             <li><a href="<?php echo getBasePath(); ?>mechanic/logout.php">Logout</a></li>
 
         <?php elseif (isLoggedIn()): ?>
-            <!-- ── Customer / Admin logged in ───────────────────────────── -->
+            <!-- ── Customer / Admin / Super Admin logged in ───────────── -->
             <?php if (!$isDashboardPage): ?>
-                <?php if (isAdmin()): ?>
+                <?php if (isSuperAdmin()): ?>
+                    <li><a href="<?php echo getBasePath(); ?>super_admin/dashboard.php">Dashboard</a></li>
+                <?php elseif (isAdmin()): ?>
                     <li><a href="<?php echo getBasePath(); ?>admin/dashboard.php">Dashboard</a></li>
                 <?php else: ?>
                     <li><a href="<?php echo getBasePath(); ?>customer/dashboard.php">Dashboard</a></li>
@@ -34,7 +33,7 @@ $mechanicLoggedIn = isset($_SESSION['mechanic_id']);
             <?php endif; ?>
 
             <!-- Notification bell — customers only, not on dashboard -->
-            <?php if (!isAdmin() && !$isDashboardPage): ?>
+            <?php if (!isAdmin() && !isSuperAdmin() && !$isDashboardPage): ?>
                 <li style="position:relative;">
                     <a href="<?php echo getBasePath(); ?>customer/notifications.php"
                        style="display:flex;align-items:center;gap:8px;">
@@ -54,7 +53,12 @@ $mechanicLoggedIn = isset($_SESSION['mechanic_id']);
                 </li>
             <?php endif; ?>
 
-            <li><a href="<?php echo getBasePath(); ?>auth/logout.php">Logout</a></li>
+            <!-- Logout — superadmin uses its own logout -->
+            <?php if (isSuperAdmin()): ?>
+                <li><a href="<?php echo getBasePath(); ?>super_admin/logout.php">Logout</a></li>
+            <?php else: ?>
+                <li><a href="<?php echo getBasePath(); ?>auth/logout.php">Logout</a></li>
+            <?php endif; ?>
 
         <?php else: ?>
             <!-- ── Not logged in ────────────────────────────────────────── -->

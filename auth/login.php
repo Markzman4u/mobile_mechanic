@@ -3,27 +3,46 @@ session_start();
 require_once __DIR__ . '/../config/db.php';
 require_once __DIR__ . '/../includes/functions.php';
 
-$error = '';
+// ── Redirect already-logged-in users ─────────────────────────────────────────
+if (!empty($_SESSION['user_id'])) {
+    $role = $_SESSION['role'] ?? 'user';
+    header('Location: ' . getBasePath() . ($role === 'admin' ? 'admin/dashboard.php' : 'customer/dashboard.php'));
+    exit;
+}
+if (!empty($_SESSION['mechanic_id'])) {
+    header('Location: ' . getBasePath() . 'mechanic/dashboard.php');
+    exit;
+}
+
+$error   = '';
 $success = isset($_GET['success']) ? 'Account created successfully! Please sign in.' : '';
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $email = trim($_POST['email'] ?? '');
-    $password = $_POST['password'] ?? '';
+    $email    = trim($_POST['email']    ?? '');
+    $password =      $_POST['password'] ?? '';
     if ($email === '' || $password === '') {
         $error = 'Email and password are required.';
     } else {
         try {
-            $pdo = getPDO();
-            $stmt = $pdo->prepare('SELECT id, password, role FROM users WHERE email = ? LIMIT 1');
+            $pdo  = getPDO();
+            $stmt = $pdo->prepare('SELECT id, password, role, is_superadmin, is_disabled FROM users WHERE email = ? LIMIT 1');
             $stmt->execute([$email]);
             $user = $stmt->fetch();
             if (!$user || !password_verify($password, $user['password'])) {
                 $error = 'Invalid email or password.';
+            } elseif ((bool) $user['is_disabled']) {
+                $error = 'This account has been disabled. Please contact support.';
             } else {
                 session_regenerate_id(true);
-                $_SESSION['user_id'] = $user['id'];
-                $_SESSION['role'] = $user['role'];
-                header('Location: ' . getBasePath() . ($user['role'] === 'admin' ? 'admin/dashboard.php' : 'customer/dashboard.php'));
+                $_SESSION['user_id']       = $user['id'];
+                $_SESSION['role']          = $user['role'];
+                $_SESSION['is_superadmin'] = (bool) $user['is_superadmin'];
+
+                $redirect = $user['is_superadmin']
+                    ? 'super_admin/dashboard.php'
+                    : ($user['role'] === 'admin' ? 'admin/dashboard.php' : 'customer/dashboard.php');
+
+                header('Location: ' . getBasePath() . $redirect);
                 exit;
             }
         } catch (Exception $e) {
@@ -56,17 +75,26 @@ require_once __DIR__ . '/../includes/header.php';
 
         <form method="post" action="<?php echo getBasePath(); ?>auth/login.php" novalidate>
             <label>Email Address
-                <input type="email" name="email" value="<?php echo e($_POST['email'] ?? ''); ?>" placeholder="your@email.com" required>
+                <input type="email" name="email"
+                       value="<?php echo e($_POST['email'] ?? ''); ?>"
+                       placeholder="your@email.com" required>
             </label>
 
             <label>Password
-                <input type="password" name="password" placeholder="Enter your password" required>
+                <input type="password" name="password"
+                       placeholder="Enter your password" required>
             </label>
 
-            <button class="btn btn-primary" type="submit" style="width:100%;padding:12px;font-size:1rem;font-weight:600;margin-bottom:16px;">Sign In</button>
+            <button class="btn btn-primary" type="submit"
+                    style="width:100%;padding:12px;font-size:1rem;font-weight:600;margin-bottom:16px;">
+                Sign In
+            </button>
 
             <div style="text-align:center;border-top:1px solid #eee;padding-top:16px;">
-                <p class="muted">Don't have an account? <a href="<?php echo getBasePath(); ?>auth/register.php" style="color:var(--safety-orange);text-decoration:none;font-weight:600;">Create one</a></p>
+                <p class="muted">Don't have an account?
+                    <a href="<?php echo getBasePath(); ?>auth/register.php"
+                       style="color:var(--safety-orange);text-decoration:none;font-weight:600;">Create one</a>
+                </p>
             </div>
         </form>
 
@@ -78,11 +106,10 @@ require_once __DIR__ . '/../includes/header.php';
                 🔧 Sign in as Mechanic →
             </a>
         </div>
-
     </div>
 
     <p style="text-align:center;color:var(--muted);margin-top:24px;font-size:0.9rem;">
-        Mobile Mechanic © 2026
+        Mobile Mechanic &copy; 2026
     </p>
 </main>
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

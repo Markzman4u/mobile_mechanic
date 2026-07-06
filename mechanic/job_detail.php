@@ -17,7 +17,23 @@ if (!$id) {
 $message = '';
 $error   = '';
 
-// Handle diagnosis save
+// ── Handle: Start Job ─────────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_job'])) {
+    $check = $pdo->prepare(
+        'SELECT id FROM requests WHERE id = :id AND mechanic_id = :mid AND status = "assigned"'
+    );
+    $check->execute([':id' => $id, ':mid' => $mechanicId]);
+
+    if ($check->fetch()) {
+        $pdo->prepare('UPDATE requests SET status = "in_progress" WHERE id = :id')
+            ->execute([':id' => $id]);
+        $message = 'Job started successfully.';
+    } else {
+        $error = 'Unable to start job — it may have already been started.';
+    }
+}
+
+// ── Handle: Save diagnosis ────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['save_diagnosis'])) {
     $diagnosis = trim($_POST['diagnosis'] ?? '');
     if ($diagnosis === '') {
@@ -60,9 +76,11 @@ if (!$req) {
 
 // Re-fetch diagnosis after save so textarea always shows latest value
 if ($message !== '') {
-    $fresh = $pdo->prepare('SELECT diagnosis FROM requests WHERE id = ?');
+    $fresh = $pdo->prepare('SELECT diagnosis, status FROM requests WHERE id = ?');
     $fresh->execute([$id]);
-    $req['diagnosis'] = $fresh->fetchColumn();
+    $freshRow = $fresh->fetch();
+    $req['diagnosis'] = $freshRow['diagnosis'];
+    $req['status']    = $freshRow['status'];
 }
 
 $custName    = $req['user_name']      ?: ($req['walkin_name']  ?: '—');
@@ -72,6 +90,16 @@ $custAddress = $req['walkin_address'] ?? '';
 $custType    = $req['user_name']      ? 'Online Customer' : ($req['walkin_name'] ? 'Walk-in' : '—');
 $hasCoords   = !empty($req['latitude']) && !empty($req['longitude']);
 $imgSrc      = !empty($req['image']) ? getBasePath() . $req['image'] : '';
+
+// Resolve vehicle display
+$vehicleMake  = $req['vehicle_make']  ?? '';
+$vehicleModel = $req['vehicle_model'] ?? '';
+$vehicleYear  = $req['vehicle_year']  ?? '';
+$vehicleParts = array_filter([$vehicleMake, $vehicleModel, $vehicleYear ? (string)$vehicleYear : '']);
+$vehicleLabel = !empty($vehicleParts) ? implode(' · ', $vehicleParts) : '';
+
+$isAssigned   = ($req['status'] === 'assigned');
+$isInProgress = ($req['status'] === 'in_progress');
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/navbar.php';
@@ -130,6 +158,20 @@ require_once __DIR__ . '/../includes/sidebar.php';
 }
 .badge-online { background: #fff3e8; color: var(--safety-orange,#ff6600); }
 .badge-walkin { background: #e8f0ff; color: #3a5bbd; }
+
+/* ── Vehicle badge ───────────────────────────────────────────────────────── */
+.vehicle-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #f5f5f5;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    padding: 4px 10px;
+    font-size: .85rem;
+    color: #333;
+    font-weight: 500;
+}
 
 /* ── Photo thumbnail ─────────────────────────────────────────────────────── */
 .photo-thumb-wrap {
@@ -215,6 +257,62 @@ require_once __DIR__ . '/../includes/sidebar.php';
     margin-top: 10px;
 }
 
+/* ── Start Job banner ────────────────────────────────────────────────────── */
+.start-job-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    background: #f0faf1;
+    border: 1px solid #a5d6a7;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-top: 20px;
+}
+.start-job-banner .banner-text {
+    font-size: .9rem;
+    color: #2e7d32;
+    font-weight: 600;
+}
+.start-job-banner .banner-sub {
+    font-size: .8rem;
+    color: #555;
+    margin-top: 2px;
+    font-weight: 400;
+}
+.btn-start-job {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 24px;
+    background: #4caf50;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: .92rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background .15s;
+    white-space: nowrap;
+}
+.btn-start-job:hover { background: #43a047; }
+
+/* ── In-progress indicator ───────────────────────────────────────────────── */
+.inprogress-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #fff8f0;
+    border: 1px solid #ffcc80;
+    border-radius: 10px;
+    padding: 12px 18px;
+    margin-top: 20px;
+    font-size: .9rem;
+    color: #b45309;
+    font-weight: 600;
+}
+
 /* ── Back link ───────────────────────────────────────────────────────────── */
 .back-link {
     display: inline-flex; align-items: center; gap: 6px;
@@ -269,6 +367,31 @@ require_once __DIR__ . '/../includes/sidebar.php';
     </div>
     <?php endif; ?>
 
+    <!-- ── Start Job banner (assigned only) ────────────────────────────── -->
+    <?php if ($isAssigned): ?>
+    <div class="start-job-banner">
+        <div>
+            <div class="banner-text">🔧 Ready to begin?</div>
+            <div class="banner-sub">Tap "Start Job" to mark this request as in progress.</div>
+        </div>
+        <form method="post" style="margin:0;"
+              onsubmit="return confirm('Start this job? This will mark it as In Progress.');">
+            <input type="hidden" name="request_id" value="<?php echo $id; ?>">
+            <button type="submit" name="start_job" class="btn-start-job">
+                ▶ Start Job
+            </button>
+        </form>
+    </div>
+    <?php endif; ?>
+
+    <!-- ── In-progress indicator (no mechanic action to complete) ───────── -->
+    <?php if ($isInProgress): ?>
+    <div class="inprogress-banner">
+        <span style="font-size:1.2rem;">🔧</span>
+        <span>Job is currently in progress — the admin will finalize and complete it.</span>
+    </div>
+    <?php endif; ?>
+
     <div class="job-grid">
 
         <!-- ── Customer info ──────────────────────────────────────────────── -->
@@ -316,6 +439,18 @@ require_once __DIR__ . '/../includes/sidebar.php';
         <div class="section-card">
             <div class="section-card-head">Request Info</div>
             <div class="section-card-body">
+
+                <div class="d-row">
+                    <span class="d-lbl">Vehicle</span>
+                    <span class="d-val">
+                        <?php if ($vehicleLabel !== ''): ?>
+                            <span class="vehicle-badge">🚗 <?php echo e($vehicleLabel); ?></span>
+                        <?php else: ?>
+                            <span class="muted" style="font-style:italic;font-size:.85rem;">Not specified</span>
+                        <?php endif; ?>
+                    </span>
+                </div>
+
                 <div class="d-row">
                     <span class="d-lbl">Problem</span>
                     <span class="d-val"><strong><?php echo e($req['problem_type'] ?: '—'); ?></strong></span>

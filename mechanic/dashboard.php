@@ -7,6 +7,25 @@ requireMechanicLogin();
 $pdo        = getPDO();
 $mechanicId = getMechanicId();
 
+// ── Handle: Start Job ─────────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['start_job'])) {
+    $requestId = (int) $_POST['request_id'];
+
+    // Verify this request belongs to this mechanic and is still assigned
+    $check = $pdo->prepare(
+        'SELECT id FROM requests WHERE id = :id AND mechanic_id = :mid AND status = "assigned"'
+    );
+    $check->execute([':id' => $requestId, ':mid' => $mechanicId]);
+
+    if ($check->fetch()) {
+        $pdo->prepare('UPDATE requests SET status = "in_progress" WHERE id = :id')
+            ->execute([':id' => $requestId]);
+    }
+
+    header('Location: ' . $_SERVER['PHP_SELF']);
+    exit;
+}
+
 // Get mechanic info
 $mechanicStmt = $pdo->prepare('SELECT name, status FROM mechanics WHERE id = ?');
 $mechanicStmt->execute([$mechanicId]);
@@ -35,6 +54,7 @@ $completedCount = $completedStmt->fetch()['count'];
 $currentStmt = $pdo->prepare('
     SELECT r.id, r.problem_type, r.status, r.description, r.diagnosis,
            r.latitude AS cust_lat, r.longitude AS cust_lng,
+           r.vehicle_make, r.vehicle_make_other, r.vehicle_model, r.vehicle_year,
            u.full_name  AS customer_name, u.phone  AS customer_phone,
            w.full_name  AS walkin_name,   w.phone  AS walkin_phone
     FROM requests r
@@ -49,9 +69,23 @@ $currentJob = $currentStmt->fetch();
 
 $hasJobCoords = $currentJob && !empty($currentJob['cust_lat']) && !empty($currentJob['cust_lng']);
 
-// Get recent completed jobs (not hidden by admin)
+// Resolve vehicle display string for current job
+$vehicleDisplay = '';
+if ($currentJob) {
+    $make  = ($currentJob['vehicle_make'] === 'Other' && !empty($currentJob['vehicle_make_other']))
+             ? $currentJob['vehicle_make_other']
+             : ($currentJob['vehicle_make'] ?? '');
+    $parts = array_filter([
+        $currentJob['vehicle_year']  ?? '',
+        $make,
+        $currentJob['vehicle_model'] ?? '',
+    ]);
+    $vehicleDisplay = implode(' · ', $parts);
+}
+
+// Get recent completed jobs — customer name + vehicle info instead of amount
 $recentStmt = $pdo->prepare('
-    SELECT id, problem_type, total_amount, completed_at
+    SELECT id, problem_type, customer_name, vehicle_make, vehicle_model, vehicle_year, completed_at
     FROM history_records
     WHERE mechanic_id = ? AND status = "completed"
     AND hidden_by_admin = FALSE
@@ -144,6 +178,23 @@ require_once __DIR__ . '/../includes/sidebar.php';
     display: inline-block; margin-right: 4px;
     vertical-align: middle;
 }
+
+/* ── Start Job button ────────────────────────────────────────────────────── */
+.btn-start-job {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    padding: 10px 22px;
+    background: #4caf50;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    font-size: .92rem;
+    font-weight: 700;
+    cursor: pointer;
+    transition: background .15s;
+}
+.btn-start-job:hover { background: #43a047; }
 </style>
 
 <main>
@@ -190,11 +241,11 @@ require_once __DIR__ . '/../includes/sidebar.php';
                         </h4>
                         <p class="muted" style="margin:0;font-size:13px;">
                             Request #<?php echo $currentJob['id']; ?> •
-                            <?php echo ucfirst($currentJob['status']); ?>
+                            <?php echo ucfirst(str_replace('_', ' ', $currentJob['status'])); ?>
                         </p>
                     </div>
                     <span class="status status-<?php echo e($currentJob['status']); ?>">
-                        <?php echo ucfirst($currentJob['status']); ?>
+                        <?php echo ucfirst(str_replace('_', ' ', $currentJob['status'])); ?>
                     </span>
                 </div>
 
@@ -205,6 +256,11 @@ require_once __DIR__ . '/../includes/sidebar.php';
                     $phone    = $currentJob['customer_phone'] ?? $currentJob['walkin_phone'] ?? 'N/A';
                     echo e($customer) . ' • ' . e($phone);
                     ?>
+                </p>
+
+                <p style="margin:0 0 12px;color:#555;font-size:14px;">
+                    <strong>🚗 Vehicle:</strong>
+                    <?php echo $vehicleDisplay ? e($vehicleDisplay) : '<span style="color:#aaa;">Not specified</span>'; ?>
                 </p>
 
                 <p style="margin:0;color:#555;font-size:14px;">
@@ -252,12 +308,36 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 </div>
                 <?php endif; ?>
 
-                <p style="margin-top:14px;text-align:right;">
+                <!-- ── Job action buttons ────────────────────────────────── -->
+                <div style="margin-top:16px;padding-top:14px;border-top:1px solid #f0f0f0;
+                            display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+
+                    <?php if ($currentJob['status'] === 'assigned'): ?>
+                        <!-- Start Job — only when status is assigned -->
+                        <form method="post" style="margin:0;"
+                              onsubmit="return confirm('Start this job? This will mark it as In Progress.');">
+                            <input type="hidden" name="request_id" value="<?php echo $currentJob['id']; ?>">
+                            <button type="submit" name="start_job" class="btn-start-job">
+                                ▶ Start Job
+                            </button>
+                        </form>
+                    <?php elseif ($currentJob['status'] === 'in_progress'): ?>
+                        <!-- Visual indicator that job is active — no mechanic action to complete -->
+                        <span style="display:inline-flex;align-items:center;gap:7px;
+                                     padding:9px 18px;background:#fff8f0;color:#b45309;
+                                     border:1px solid #ffcc80;border-radius:6px;
+                                     font-size:.88rem;font-weight:600;">
+                            🔧 Job in progress
+                        </span>
+                    <?php endif; ?>
+
                     <a class="btn btn-primary"
-                       href="<?php echo getBasePath(); ?>mechanic/job_detail.php?id=<?php echo $currentJob['id']; ?>">
-                        View &amp; Manage Job
+                       href="<?php echo getBasePath(); ?>mechanic/job_detail.php?id=<?php echo $currentJob['id']; ?>"
+                       style="margin-left:auto;">
+                        View &amp; Manage Job →
                     </a>
-                </p>
+                </div>
+
             </div>
         <?php else: ?>
             <div class="card" style="background:#e8f5e9;border-left:4px solid #4caf50;text-align:center;padding:20px;">
@@ -279,7 +359,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
                     <thead>
                         <tr style="background:#f5f5f5;border-bottom:1px solid #d0d0d0;">
                             <th style="padding:12px;text-align:left;font-weight:600;">Problem Type</th>
-                            <th style="padding:12px;text-align:right;font-weight:600;">Amount</th>
+                            <th style="padding:12px;text-align:left;font-weight:600;">Customer</th>
+                            <th style="padding:12px;text-align:left;font-weight:600;">Vehicle</th>
                             <th style="padding:12px;text-align:right;font-weight:600;">Completed</th>
                         </tr>
                     </thead>
@@ -287,8 +368,18 @@ require_once __DIR__ . '/../includes/sidebar.php';
                         <?php foreach ($recentJobs as $job): ?>
                             <tr style="border-bottom:1px solid #e0e0e0;">
                                 <td style="padding:12px;"><?php echo e($job['problem_type']); ?></td>
-                                <td style="padding:12px;text-align:right;font-weight:600;">
-                                    $<?php echo number_format($job['total_amount'], 2); ?>
+                                <td style="padding:12px;color:#555;">
+                                    <?php echo e($job['customer_name'] ?? '—'); ?>
+                                </td>
+                                <td style="padding:12px;color:#555;">
+                                    <?php
+                                    $parts = array_filter([
+                                        $job['vehicle_year']  ?? '',
+                                        $job['vehicle_make']  ?? '',
+                                        $job['vehicle_model'] ?? '',
+                                    ]);
+                                    echo e(implode(' · ', $parts) ?: '—');
+                                    ?>
                                 </td>
                                 <td style="padding:12px;text-align:right;color:#666;font-size:13px;">
                                     <?php echo date('M d, Y', strtotime($job['completed_at'])); ?>

@@ -5,20 +5,148 @@ require_once __DIR__ . '/../includes/auth.php';
 requireLogin();
 
 $user_id = $_SESSION['user_id'];
+$pdo     = getPDO();
 
+// ── Fetch current user cancel state ──────────────────────────────────────
+$uStmt = $pdo->prepare(
+    'SELECT cancel_count_today, cancel_date, cancel_blocked_until
+     FROM users WHERE id = ?'
+);
+$uStmt->execute([$user_id]);
+$userRow = $uStmt->fetch();
+
+// Resolve today's values (auto-reset if a new calendar day has started)
+$isNewDay     = !$userRow['cancel_date'] || $userRow['cancel_date'] !== date('Y-m-d');
+$cancelCount  = $isNewDay ? 0 : (int)$userRow['cancel_count_today'];
+$blockedUntil = $isNewDay ? null : $userRow['cancel_blocked_until'];
+
+// Is the user currently blocked?
+$isBlocked        = $blockedUntil && strtotime($blockedUntil) > time();
+$blockedUntilTs   = $isBlocked ? strtotime($blockedUntil) : 0;
+
+// ── Handle cancel POST ────────────────────────────────────────────────────
+$flash     = null;
+$flashType = 'info';
+
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['cancel_request_id'])) {
+    $cancelId = (int)$_POST['cancel_request_id'];
+
+    // Verify the request belongs to this user and is still pending
+    $chk = $pdo->prepare(
+        'SELECT r.*, u.full_name, u.phone, u.gender, u.date_of_birth,
+                m.name AS mech_name, m.gender AS mech_gender
+         FROM requests r
+         LEFT JOIN users     u ON r.user_id     = u.id
+         LEFT JOIN mechanics m ON r.mechanic_id = m.id
+         WHERE r.id = ? AND r.user_id = ? AND r.status = "pending"'
+    );
+    $chk->execute([$cancelId, $user_id]);
+    $reqData = $chk->fetch();
+
+    if (!$reqData) {
+        $flash     = 'This request cannot be cancelled — it may have already been assigned or processed.';
+        $flashType = 'error';
+    } else {
+        // ── Calculate new cancel count & block ──────────────────────────
+        // If it's a new day, start fresh regardless of stored values
+        $newCount = ($isNewDay ? 0 : $cancelCount) + 1;
+
+        // From the 2nd cancel onwards, every cancel triggers a fresh 5-min block.
+        // The block always starts from NOW() so each cancel "restarts" the timer.
+        $newBlockedUntil = ($newCount >= 2)
+            ? date('Y-m-d H:i:s', strtotime('+5 minutes'))
+            : null;
+
+        // ── Archive to history_records ──────────────────────────────────
+        $resolvedMake = ($reqData['vehicle_make'] === 'Other' && !empty($reqData['vehicle_make_other']))
+            ? $reqData['vehicle_make_other']
+            : $reqData['vehicle_make'];
+
+        $histStmt = $pdo->prepare(
+            'INSERT INTO history_records
+             (request_id, user_id, walkin_id, is_walkin,
+              customer_name, customer_phone, customer_gender, customer_dob,
+              mechanic_id, mechanic_name, mechanic_gender,
+              vehicle_make, vehicle_model, vehicle_year,
+              problem_type, description, image,
+              latitude, longitude, diagnosis,
+              status, rejection_reason, total_amount,
+              request_created_at, completed_at)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NOW())'
+        );
+        $histStmt->execute([
+            $cancelId,
+            $reqData['user_id'],
+            $reqData['walkin_id'],
+            0, // is_walkin
+            $reqData['full_name'],
+            $reqData['phone'],
+            $reqData['gender'],
+            $reqData['date_of_birth'],
+            $reqData['mechanic_id'],
+            $reqData['mech_name'],
+            $reqData['mech_gender'],
+            $resolvedMake,
+            $reqData['vehicle_model'],
+            $reqData['vehicle_year'],
+            $reqData['problem_type'],
+            $reqData['description'],
+            $reqData['image'],
+            $reqData['latitude'],
+            $reqData['longitude'],
+            $reqData['diagnosis'],
+            'cancelled',
+            null,
+            0.00,
+            $reqData['created_at'],
+        ]);
+
+        // ── Mark request as cancelled ───────────────────────────────────
+        $pdo->prepare('UPDATE requests SET status = "cancelled" WHERE id = ?')
+            ->execute([$cancelId]);
+
+        // ── Persist cancel tracking to users table ──────────────────────
+        $pdo->prepare(
+            'UPDATE users
+             SET cancel_count_today   = ?,
+                 cancel_date          = CURDATE(),
+                 cancel_blocked_until = ?
+             WHERE id = ?'
+        )->execute([$newCount, $newBlockedUntil, $user_id]);
+
+        // Update local state for the current page render
+        $cancelCount  = $newCount;
+        $blockedUntil = $newBlockedUntil;
+        $isBlocked    = $newBlockedUntil && strtotime($newBlockedUntil) > time();
+        $blockedUntilTs = $isBlocked ? strtotime($newBlockedUntil) : 0;
+        $isNewDay     = false;
+
+        if ($newBlockedUntil) {
+            $blockedFmt = date('g:i:s A', strtotime($newBlockedUntil));
+            $flash      = 'Request #' . $cancelId . ' cancelled. '
+                        . 'You\'ve cancelled ' . $newCount . ' time' . ($newCount !== 1 ? 's' : '') . ' today — '
+                        . 'new requests are blocked until <strong>' . $blockedFmt . '</strong>.';
+            $flashType  = 'warning';
+        } else {
+            $flash     = 'Request #' . $cancelId . ' has been cancelled.';
+            $flashType = 'success';
+        }
+    }
+}
+
+// ── Load active requests ──────────────────────────────────────────────────
 $requests = [];
 if ($user_id) {
-    $pdo  = getPDO();
     $stmt = $pdo->prepare(
         'SELECT r.*,
-                m.name               AS mechanic_name,
-                m.current_lat        AS mech_lat,
-                m.current_lng        AS mech_lng,
+                m.name                AS mechanic_name,
+                m.current_lat         AS mech_lat,
+                m.current_lng         AS mech_lng,
                 m.location_updated_at AS mech_loc_updated
          FROM requests r
          LEFT JOIN mechanics m ON r.mechanic_id = m.id
          WHERE r.user_id = ?
-           AND r.status NOT IN ("completed", "rejected")
+           AND r.status NOT IN ("completed","rejected","cancelled")
          ORDER BY r.created_at DESC'
     );
     $stmt->execute([$user_id]);
@@ -146,6 +274,74 @@ require_once __DIR__ . '/../includes/sidebar.php';
 }
 .empty-state .empty-icon { font-size:3rem; display:block; margin-bottom:12px; }
 
+/* ── Flash messages ────────────────────────────────────────────────────── */
+.flash {
+    padding: 12px 16px;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: .9rem;
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+}
+.flash.success { background:#e8f5e9; border-left:4px solid #4caf50; color:#2e7d32; }
+.flash.warning { background:#fff8e1; border-left:4px solid #ff9800; color:#7c4a00; }
+.flash.error   { background:#fce4ec; border-left:4px solid #e53935; color:#b71c1c; }
+.flash.info    { background:#e3f2fd; border-left:4px solid #1e88e5; color:#0d47a1; }
+.flash-icon    { font-size:1.1rem; flex-shrink:0; margin-top:1px; }
+
+/* ── Block banner ──────────────────────────────────────────────────────── */
+.block-banner {
+    background: #fff3e0;
+    border: 1.5px solid #ff9800;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin-bottom: 16px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    flex-wrap: wrap;
+}
+.block-banner-icon { font-size: 1.6rem; flex-shrink: 0; }
+.block-banner-text { flex: 1; min-width: 0; }
+.block-banner-text strong { display: block; font-size: .95rem; color: #e65100; margin-bottom: 3px; }
+.block-banner-text p { margin: 0; font-size: .84rem; color: #7c4a00; }
+.block-countdown {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #e65100;
+    background: #ffe0b2;
+    padding: 6px 14px;
+    border-radius: 8px;
+    min-width: 80px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+/* ── Cancel streak counter ─────────────────────────────────────────────── */
+.cancel-tally {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    background: #fafafa;
+    border: 1px solid #eee;
+    border-radius: 20px;
+    padding: 4px 12px;
+    font-size: .78rem;
+    color: #666;
+    margin-bottom: 14px;
+}
+.cancel-tally .tally-dots {
+    display: flex; gap: 4px;
+}
+.cancel-tally .tally-dot {
+    width: 10px; height: 10px;
+    border-radius: 50%;
+    background: #ddd;
+}
+.cancel-tally .tally-dot.used { background: #ff9800; }
+.cancel-tally .tally-dot.warn { background: #e53935; }
+
 /* ── Photo thumbnail ───────────────────────────────────────────────────── */
 .photo-thumb-wrap {
     display: inline-block;
@@ -227,6 +423,35 @@ require_once __DIR__ . '/../includes/sidebar.php';
     line-height: 1;
 }
 .lightbox-close:hover { background: var(--safety-orange,#ff6600); color:#fff; }
+
+/* ── Cancel confirm modal ──────────────────────────────────────────────── */
+.modal-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,.55);
+    z-index: 8000;
+    align-items: center;
+    justify-content: center;
+    animation: lbFadeIn .18s ease;
+}
+.modal-overlay.open { display: flex; }
+.modal-box {
+    background: #fff;
+    border-radius: 12px;
+    padding: 28px 28px 22px;
+    max-width: 420px;
+    width: calc(100% - 40px);
+    box-shadow: 0 12px 48px rgba(0,0,0,.22);
+    animation: lbZoomIn .2s ease;
+}
+.modal-box h3 { margin: 0 0 10px; font-size: 1.1rem; }
+.modal-box p  { margin: 0 0 20px; font-size: .88rem; color: #555; line-height: 1.5; }
+.modal-actions {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+}
 
 /* ── Map accordion ─────────────────────────────────────────────────────── */
 .map-accordion {
@@ -348,6 +573,20 @@ require_once __DIR__ . '/../includes/sidebar.php';
     flex-shrink: 0;
 }
 
+/* ── Cancel btn ────────────────────────────────────────────────────────── */
+.btn-cancel {
+    background: #fff0f0;
+    color: #c62828;
+    border: 1px solid #ffcdd2;
+    padding: 7px 16px;
+    border-radius: 6px;
+    font-size: .85rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s;
+}
+.btn-cancel:hover { background: #ffebee; }
+
 /* ── Responsive ────────────────────────────────────────────────────────── */
 @media(max-width:680px){
     .track-wrap { flex-direction:column; }
@@ -363,16 +602,91 @@ require_once __DIR__ . '/../includes/sidebar.php';
     </div>
 </div>
 
+<!-- ── Cancel confirm modal ───────────────────────────────────────────── -->
+<div class="modal-overlay" id="cancelModal" role="dialog" aria-modal="true" aria-label="Cancel request">
+    <div class="modal-box">
+        <h3>⚠️ Cancel this request?</h3>
+        <p id="cancelModalMsg">Are you sure you want to cancel this request? This action cannot be undone.</p>
+        <div class="modal-actions">
+            <button class="btn" onclick="closeCancelModal()">Keep Request</button>
+            <form method="POST" style="display:inline;" id="cancelForm">
+                <input type="hidden" name="cancel_request_id" id="cancelRequestInput" value="">
+                <button type="submit" class="btn-cancel">Yes, Cancel It</button>
+            </form>
+        </div>
+    </div>
+</div>
+
 <main>
 <div class="card">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
         <h2 style="margin:0;">My Service Requests</h2>
-        <a href="<?php echo getBasePath(); ?>customer/request_service.php"
-           class="btn btn-primary" style="padding:8px 16px;font-size:.85rem;">
-            + New Request
-        </a>
+        <?php if ($isBlocked): ?>
+            <button class="btn btn-primary" disabled
+                    style="opacity:.5;cursor:not-allowed;padding:8px 16px;font-size:.85rem;"
+                    title="You are temporarily blocked from submitting new requests.">
+                + New Request
+            </button>
+        <?php else: ?>
+            <a href="<?php echo getBasePath(); ?>customer/request_service.php"
+               class="btn btn-primary" style="padding:8px 16px;font-size:.85rem;">
+                + New Request
+            </a>
+        <?php endif; ?>
     </div>
-    <p class="muted" style="margin-top:4px;">Active requests are tracked here. View completed ones in <a href="<?php echo getBasePath(); ?>customer/customer_history.php">History</a>.</p>
+    <p class="muted" style="margin-top:4px;">
+        Active requests are tracked here. View completed ones in
+        <a href="<?php echo getBasePath(); ?>customer/customer_history.php">History</a>.
+    </p>
+
+    <?php if ($flash): ?>
+    <div class="flash <?php echo e($flashType); ?>">
+        <span class="flash-icon">
+            <?php echo $flashType === 'success' ? '✅' : ($flashType === 'warning' ? '⏱️' : '❌'); ?>
+        </span>
+        <span><?php echo $flash; ?></span>
+    </div>
+    <?php endif; ?>
+
+    <?php
+    // ── Block banner (shown whenever block is active) ─────────────────────
+    if ($isBlocked):
+        $remaining = $blockedUntilTs - time(); // seconds remaining
+    ?>
+    <div class="block-banner">
+        <div class="block-banner-icon">🚫</div>
+        <div class="block-banner-text">
+            <strong>New requests temporarily blocked</strong>
+            <p>
+                You have cancelled <?php echo $cancelCount; ?> time<?php echo $cancelCount !== 1 ? 's' : ''; ?> today.
+                After 2 cancellations, each additional cancel triggers a 5-minute cooldown on new submissions.
+                The block lifts automatically — you can still cancel existing pending requests.
+            </p>
+        </div>
+        <div class="block-countdown" id="blockCountdown">
+            <?php
+            $mins = floor($remaining / 60);
+            $secs = $remaining % 60;
+            echo str_pad($mins, 2, '0', STR_PAD_LEFT) . ':' . str_pad($secs, 2, '0', STR_PAD_LEFT);
+            ?>
+        </div>
+    </div>
+    <?php elseif ($cancelCount > 0 && !$isNewDay): ?>
+    <!-- Soft warning: not blocked yet but has 1 cancel today -->
+    <div class="cancel-tally">
+        <span>Today's cancels:</span>
+        <span class="tally-dots">
+            <?php for ($d = 0; $d < 3; $d++): ?>
+                <span class="tally-dot <?php echo $d < $cancelCount ? 'used' : ''; ?>"></span>
+            <?php endfor; ?>
+        </span>
+        <span style="color:#999;">
+            <?php echo $cancelCount >= 2
+                ? '⚠️ Next cancel = 5 min block'
+                : ($cancelCount === 1 ? '1 more = 5 min block' : ''); ?>
+        </span>
+    </div>
+    <?php endif; ?>
 
     <?php if (empty($requests)): ?>
         <!-- ── No active requests ──────────────────────────────────────── -->
@@ -383,8 +697,14 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 You have no pending or in-progress requests right now.
             </span><br><br>
             <div style="display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
-                <a href="<?php echo getBasePath(); ?>customer/request_service.php"
-                   class="btn btn-primary">Submit New Request</a>
+                <?php if ($isBlocked): ?>
+                    <button class="btn btn-primary" disabled style="opacity:.5;cursor:not-allowed;">
+                        Submit New Request (blocked)
+                    </button>
+                <?php else: ?>
+                    <a href="<?php echo getBasePath(); ?>customer/request_service.php"
+                       class="btn btn-primary">Submit New Request</a>
+                <?php endif; ?>
                 <a href="<?php echo getBasePath(); ?>customer/customer_history.php"
                    class="btn">View History</a>
             </div>
@@ -422,15 +742,15 @@ require_once __DIR__ . '/../includes/sidebar.php';
             <!-- ── Right: selected request detail ─────────────────────── -->
             <?php if ($selected): ?>
             <?php
-                // Prepare map data for JS
-                $hasMech    = !empty($selected['mechanic_id']);
-                $mechLat    = $hasMech && !empty($selected['mech_lat'])  ? (float)$selected['mech_lat']  : null;
-                $mechLng    = $hasMech && !empty($selected['mech_lng'])  ? (float)$selected['mech_lng']  : null;
-                $custLat    = !empty($selected['latitude'])  ? (float)$selected['latitude']  : null;
-                $custLng    = !empty($selected['longitude']) ? (float)$selected['longitude'] : null;
-                $mechName   = e($selected['mechanic_name'] ?? '');
-                $requestId  = (int)$selected['id'];
-                $mechId     = (int)($selected['mechanic_id'] ?? 0);
+                $hasMech   = !empty($selected['mechanic_id']);
+                $mechLat   = $hasMech && !empty($selected['mech_lat'])  ? (float)$selected['mech_lat']  : null;
+                $mechLng   = $hasMech && !empty($selected['mech_lng'])  ? (float)$selected['mech_lng']  : null;
+                $custLat   = !empty($selected['latitude'])  ? (float)$selected['latitude']  : null;
+                $custLng   = !empty($selected['longitude']) ? (float)$selected['longitude'] : null;
+                $mechName  = e($selected['mechanic_name'] ?? '');
+                $requestId = (int)$selected['id'];
+                $mechId    = (int)($selected['mechanic_id'] ?? 0);
+                $isPending = $selected['status'] === 'pending';
             ?>
             <div class="track-detail">
 
@@ -443,9 +763,17 @@ require_once __DIR__ . '/../includes/sidebar.php';
                                      text-transform:uppercase;letter-spacing:.05em;">Request</span>
                         <h3 style="margin:0;">#<?php echo (int)$selected['id']; ?></h3>
                     </div>
-                    <div style="text-align:right;font-size:.82rem;color:var(--muted,#888);">
-                        Submitted<br>
-                        <strong style="color:#333;"><?php echo e(date('M j, Y  H:i', strtotime($selected['created_at']))); ?></strong>
+                    <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+                        <div style="text-align:right;font-size:.82rem;color:var(--muted,#888);">
+                            Submitted<br>
+                            <strong style="color:#333;"><?php echo e(date('M j, Y  H:i', strtotime($selected['created_at']))); ?></strong>
+                        </div>
+                        <?php if ($isPending): ?>
+                        <button class="btn-cancel"
+                                onclick="openCancelModal(<?php echo $requestId; ?>, <?php echo $cancelCount; ?>)">
+                            Cancel Request
+                        </button>
+                        <?php endif; ?>
                     </div>
                 </div>
 
@@ -537,7 +865,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 <!-- ── Map accordion ──────────────────────────────────── -->
                 <div class="map-accordion" style="margin-top:16px;">
 
-                    <button class="map-accordion-toggle" id="mapToggle" onclick="toggleMapAccordion()" aria-expanded="false">
+                    <button class="map-accordion-toggle" id="mapToggle"
+                            onclick="toggleMapAccordion()" aria-expanded="false">
                         <span class="toggle-left">
                             🗺️ <span>Mechanic Location</span>
                             <?php if ($hasMech): ?>
@@ -552,7 +881,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
                     <div class="map-accordion-body" id="mapAccordionBody">
 
                         <?php if (!$hasMech): ?>
-                            <!-- No mechanic assigned yet -->
                             <div class="map-unassigned">
                                 <span class="ua-icon">📍</span>
                                 <strong>Mechanic not yet assigned</strong><br>
@@ -562,10 +890,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
                             </div>
 
                         <?php else: ?>
-                            <!-- Map -->
                             <div id="custMap" class="cust-map"></div>
 
-                            <!-- Toolbar -->
                             <div class="map-acc-toolbar">
                                 <button class="map-acc-btn" onclick="custFocusMechanic()">🔧 Go to Mechanic</button>
                                 <?php if ($custLat && $custLng): ?>
@@ -578,7 +904,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
                                 </span>
                             </div>
 
-                            <!-- Legend -->
                             <div class="map-acc-legend">
                                 <div class="legend-item">
                                     <span class="legend-dot" style="background:#3a5bbd;"></span> Mechanic
@@ -613,6 +938,64 @@ require_once __DIR__ . '/../includes/sidebar.php';
 <?php endif; ?>
 
 <script>
+/* ── Block countdown timer ────────────────────────────────────────────── */
+<?php if ($isBlocked): ?>
+(function () {
+    var endsAt   = <?php echo $blockedUntilTs; ?> * 1000; // ms
+    var el       = document.getElementById('blockCountdown');
+    var newReqBtn = document.querySelector('.btn.btn-primary[disabled]');
+
+    function tick() {
+        var diff = Math.max(0, Math.floor((endsAt - Date.now()) / 1000));
+        if (el) {
+            var m = Math.floor(diff / 60), s = diff % 60;
+            el.textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
+        }
+        if (diff <= 0) {
+            // Block expired — reload so the banner disappears and button re-enables
+            location.reload();
+        }
+    }
+    tick();
+    setInterval(tick, 1000);
+})();
+<?php endif; ?>
+
+/* ── Cancel modal ─────────────────────────────────────────────────────── */
+function openCancelModal(requestId, cancelCount) {
+    var modal = document.getElementById('cancelModal');
+    var msg   = document.getElementById('cancelModalMsg');
+
+    document.getElementById('cancelRequestInput').value = requestId;
+
+    // Personalise the warning message based on cancel history
+    var warningNote = '';
+    if (cancelCount === 0) {
+        warningNote = ' <strong>Note:</strong> A second cancellation today will temporarily block you from submitting new requests for 5 minutes.';
+    } else if (cancelCount >= 1) {
+        warningNote = ' <strong>Warning:</strong> This cancellation will block you from submitting new requests for 5 minutes.';
+    }
+
+    msg.innerHTML = 'Are you sure you want to cancel request #' + requestId
+        + '? This action cannot be undone.' + warningNote;
+
+    modal.classList.add('open');
+    document.body.style.overflow = 'hidden';
+}
+
+function closeCancelModal() {
+    document.getElementById('cancelModal').classList.remove('open');
+    document.body.style.overflow = '';
+}
+
+// Close modal on backdrop click
+document.getElementById('cancelModal').addEventListener('click', function (e) {
+    if (e.target === this) closeCancelModal();
+});
+document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape') closeCancelModal();
+});
+
 /* ── Lightbox ─────────────────────────────────────────────────────────── */
 function openLightbox(src) {
     var overlay = document.getElementById('lightbox');
@@ -643,7 +1026,6 @@ function toggleMapAccordion() {
     btn.classList.toggle('open', open);
     btn.setAttribute('aria-expanded', open);
 
-    // Initialise map on first open (Leaflet needs visible container)
     if (open && !mapInitialised) {
         initCustMap();
         mapInitialised = true;
@@ -667,12 +1049,11 @@ function toggleMapAccordion() {
     var CUST_LAT      = <?php echo $custLat !== null ? $custLat : 'null'; ?>;
     var CUST_LNG      = <?php echo $custLng !== null ? $custLng : 'null'; ?>;
 
-    var custMap      = null;
-    var mechMarker   = null;
-    var custMarker   = null;
-    var connectLine  = null;
+    var custMap     = null;
+    var mechMarker  = null;
+    var custMarker  = null;
+    var connectLine = null;
 
-    /* expose globally so toggle can call invalidateSize */
     window.custMap = null;
 
     function makeIcon(color) {
@@ -746,7 +1127,6 @@ function toggleMapAccordion() {
             attribution: '© OpenStreetMap contributors', maxZoom: 19
         }).addTo(custMap);
 
-        /* Customer marker (static — their submitted location) */
         if (CUST_LAT !== null) {
             custMarker = L.marker([CUST_LAT, CUST_LNG], { icon: makeIcon('#ff6600') })
                 .addTo(custMap)
@@ -754,8 +1134,6 @@ function toggleMapAccordion() {
         }
 
         renderMarkers(INIT_MECH_LAT, INIT_MECH_LNG);
-
-        /* Start polling */
         setInterval(pollMechanic, POLL_MS);
     };
 
@@ -770,15 +1148,13 @@ function toggleMapAccordion() {
         fetch(POLL_URL)
             .then(function(r) { return r.json(); })
             .then(function(data) {
-                var badge = document.getElementById('custLiveBadge');
                 for (var i = 0; i < data.length; i++) {
                     if (data[i].id !== MECH_ID) continue;
                     var m = data[i];
                     if (m.current_lat) {
                         renderMarkers(parseFloat(m.current_lat), parseFloat(m.current_lng));
-                        var now = new Date();
                         var lbl = document.getElementById('custLastUpdated');
-                        if (lbl) lbl.textContent = 'Updated ' + now.toLocaleTimeString();
+                        if (lbl) lbl.textContent = 'Updated ' + new Date().toLocaleTimeString();
                     }
                     break;
                 }
@@ -791,7 +1167,6 @@ function toggleMapAccordion() {
 
 })();
 <?php else: ?>
-/* No mechanic assigned — no map JS needed */
 window.initCustMap = function () {};
 <?php endif; ?>
 </script>

@@ -5,7 +5,7 @@ require_once __DIR__ . '/../includes/functions.php';
 
 if (!empty($_SESSION['user_id'])) {
     try {
-        $pdo = getPDO();
+        $pdo  = getPDO();
         $stmt = $pdo->prepare('UPDATE users SET last_logout = CURRENT_TIMESTAMP WHERE id = ?');
         $stmt->execute([$_SESSION['user_id']]);
     } catch (Exception $e) {
@@ -15,5 +15,5 @@ if (!empty($_SESSION['user_id'])) {
 
 session_unset();
 session_destroy();
-header('Location: ' . getBasePath());
+header('Location: ' . getBasePath() . 'super_admin/login.php');
 exit;

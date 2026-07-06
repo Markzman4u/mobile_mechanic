@@ -4,7 +4,7 @@ require_once __DIR__ . '/../includes/functions.php';
 require_once __DIR__ . '/../includes/auth.php';
 requireLogin();
 
-if (!isAdmin()) {
+if (!isSuperAdmin()) {
     header('Location: ' . getBasePath() . 'customer/dashboard.php');
     exit;
 }
@@ -79,7 +79,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
     <?php endif; ?>
 
     <style>
-        /* ── Filter tabs ───────────────────────────────────────────────── */
         .filter-tabs {
             display: flex;
             gap: 6px;
@@ -116,7 +115,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         }
         .filter-tab.active .tab-count { background: rgba(255,255,255,0.3); }
 
-        /* ── Toolbar ───────────────────────────────────────────────────── */
         .toolbar {
             display: flex;
             align-items: center;
@@ -141,7 +139,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .btn-danger:hover { background: #c0392b; }
         .btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
 
-        /* ── Selection bar ─────────────────────────────────────────────── */
         #selection-bar {
             display: none;
             align-items: center;
@@ -161,11 +158,9 @@ require_once __DIR__ . '/../includes/sidebar.php';
         tbody tr.selected-row { background: #fff3e8 !important; }
         input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--safety-orange, #ff6600); }
 
-        /* ── Status badges ─────────────────────────────────────────────── */
         .status-completed { background:#e8f7e9; color:#2f6627; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
         .status-rejected  { background:#fff4f4; color:#a94442; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
 
-        /* ── Walk-in badge ─────────────────────────────────────────────── */
         .badge-walkin {
             display: inline-block;
             background: #fff3e0;
@@ -179,7 +174,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
             font-weight: 600;
         }
 
-        /* ── Empty state ───────────────────────────────────────────────── */
         #no-filter-results {
             display: none;
             text-align: center;
@@ -303,7 +297,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
                             </td>
                         </tr>
                     <?php endforeach; ?>
-                    <!-- Empty state shown when filters/search yield no results -->
                     <tr id="no-filter-results" style="display:none;">
                         <td colspan="9" style="text-align:center;color:var(--muted);padding:20px;">
                             No records match the selected filter.
@@ -318,11 +311,9 @@ require_once __DIR__ . '/../includes/sidebar.php';
 </main>
 
 <script>
-    // ── State ──────────────────────────────────────────────────────────────
     let activeFilter = 'all';
     let searchQuery  = '';
 
-    // ── Apply both filter + search together ───────────────────────────────
     function applyFilters() {
         const rows    = document.querySelectorAll('#history-table tbody tr[data-status]');
         let   visible = 0;
@@ -336,7 +327,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 true;
 
             const matchesSearch = !searchQuery || row.dataset.search.includes(searchQuery);
-
             const show = matchesFilter && matchesSearch;
             row.style.display = show ? '' : 'none';
             if (!show) {
@@ -346,14 +336,12 @@ require_once __DIR__ . '/../includes/sidebar.php';
             if (show) visible++;
         });
 
-        // Show "no results" placeholder row
         const emptyRow = document.getElementById('no-filter-results');
         if (emptyRow) emptyRow.style.display = visible === 0 ? 'table-row' : 'none';
 
         updateSelection();
     }
 
-    // ── Filter tab clicks ─────────────────────────────────────────────────
     document.querySelectorAll('.filter-tab').forEach(tab => {
         tab.addEventListener('click', function () {
             document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
@@ -363,13 +351,11 @@ require_once __DIR__ . '/../includes/sidebar.php';
         });
     });
 
-    // ── Search input ──────────────────────────────────────────────────────
     document.getElementById('search-input').addEventListener('input', function () {
         searchQuery = this.value.toLowerCase().trim();
         applyFilters();
     });
 
-    // ── Select all (visible rows only) ───────────────────────────────────
     document.getElementById('check-all').addEventListener('change', function () {
         const boxes = document.querySelectorAll('#history-table tbody tr[data-status]:not([style*="display:none"]) .row-check');
         boxes.forEach(cb => {

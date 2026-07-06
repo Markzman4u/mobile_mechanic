@@ -30,11 +30,11 @@ if (isset($_GET['edit']) && ctype_digit($_GET['edit'])) {
 
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     $mechanic_id = isset($_POST['mechanic_id']) ? (int) $_POST['mechanic_id'] : null;
-    $name        = trim($_POST['name']     ?? '');
-    $phone       = trim($_POST['phone']    ?? '');
-    $email       = trim($_POST['email']    ?? '');
-    $address     = trim($_POST['address']  ?? '');
-    $password    = $_POST['password']      ?? '';
+    $name        = trim($_POST['name']    ?? '');
+    $phone       = trim($_POST['phone']   ?? '');
+    $email       = trim($_POST['email']   ?? '');
+    $address     = trim($_POST['address'] ?? '');
+    $password    = $_POST['password']     ?? '';
 
     if ($name === '') {
         $error = 'Mechanic name is required.';
@@ -46,17 +46,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         // Handle profile pic upload
         $profile_pic = $editing['profile_pic'] ?? null;
         if (!empty($_FILES['profile_pic']['name'])) {
-            $uploadDir = __DIR__ . '/../../uploads/mechanic_pics/';
+            // __DIR__ = .../admin/ — one level up reaches the project root
+            $uploadDir = __DIR__ . '/../uploads/profile_pics/';
             if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
-            $ext      = strtolower(pathinfo($_FILES['profile_pic']['name'], PATHINFO_EXTENSION));
-            $allowed  = ['jpg', 'jpeg', 'png', 'webp'];
+            $ext     = strtolower(pathinfo($_FILES['profile_pic']['name'], PATHINFO_EXTENSION));
+            $allowed = ['jpg', 'jpeg', 'png', 'webp'];
             if (!in_array($ext, $allowed)) {
                 $error = 'Profile picture must be JPG, PNG, or WEBP.';
             } elseif ($_FILES['profile_pic']['size'] > 2 * 1024 * 1024) {
                 $error = 'Profile picture must be under 2MB.';
             } else {
                 $filename    = 'mech_' . time() . '_' . bin2hex(random_bytes(4)) . '.' . $ext;
-                $profile_pic = 'uploads/mechanic_pics/' . $filename;
+                $profile_pic = 'uploads/profile_pics/' . $filename;
                 move_uploaded_file($_FILES['profile_pic']['tmp_name'], $uploadDir . $filename);
             }
         }
@@ -79,8 +80,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                     $pdo->prepare("UPDATE mechanics SET $fields WHERE id = :id")
                         ->execute($params);
-                    $message = 'Mechanic updated successfully.';
-                    header('Location: ' . getBasePath() . 'admin/manage_mechanics.php');
+
+                    header('Location: ' . getBasePath() . 'admin/manage_mechanics.php?msg=updated');
                     exit;
                 } else {
                     // Insert
@@ -96,7 +97,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                         ':address'     => $address,
                         ':profile_pic' => $profile_pic,
                     ]);
-                    $message = 'Mechanic registered successfully.';
+
+                    header('Location: ' . getBasePath() . 'admin/manage_mechanics.php?msg=created');
+                    exit;
                 }
             } catch (Exception $e) {
                 $error = 'Error saving mechanic: ' . $e->getMessage();

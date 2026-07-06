@@ -11,11 +11,11 @@ if (!isAdmin()) {
 
 $pdo    = getPDO();
 $userId = $_SESSION['user_id'];
-$errors  = [];
+$error   = '';
 $success = '';
 
 // Fetch admin
-$stmt = $pdo->prepare('SELECT full_name, email, phone, profile_pic, password FROM users WHERE id = ? AND role = "admin"');
+$stmt = $pdo->prepare('SELECT full_name, email, phone, profile_pic FROM users WHERE id = ? AND role = "admin"');
 $stmt->execute([$userId]);
 $admin = $stmt->fetch();
 
@@ -24,128 +24,68 @@ if (!$admin) {
     exit;
 }
 
-// ── Handle POST ────────────────────────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    $section = $_POST['section'] ?? '';
+// ── Handle photo upload ────────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_photo'])) {
+    if (!isset($_FILES['profile_pic']) || $_FILES['profile_pic']['error'] === UPLOAD_ERR_NO_FILE) {
+        $error = 'Please choose a photo to upload.';
+    } elseif ($_FILES['profile_pic']['error'] !== UPLOAD_ERR_OK) {
+        $error = 'Upload failed. Please try again.';
+    } else {
+        $file = $_FILES['profile_pic'];
 
-    // ── Profile pic upload ─────────────────────────────────────────────────
-    if ($section === 'avatar') {
-        if (isset($_FILES['profile_pic']) && $_FILES['profile_pic']['error'] === UPLOAD_ERR_OK) {
-            $file     = $_FILES['profile_pic'];
-            $allowed  = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-            $maxBytes = 2 * 1024 * 1024;
+        $allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+        $maxSize      = 2 * 1024 * 1024;
 
-            $finfo    = finfo_open(FILEINFO_MIME_TYPE);
-            $mimeType = finfo_file($finfo, $file['tmp_name']);
-            finfo_close($finfo);
+        $finfo    = finfo_open(FILEINFO_MIME_TYPE);
+        $mimeType = finfo_file($finfo, $file['tmp_name']);
+        finfo_close($finfo);
 
-            if (!in_array($mimeType, $allowed)) {
-                $errors[] = 'Only JPG, PNG, GIF, and WebP images are allowed.';
-            } elseif ($file['size'] > $maxBytes) {
-                $errors[] = 'Image must be smaller than 2 MB.';
-            } else {
-                $uploadDir = __DIR__ . '/../uploads/profile_pics/';
-                if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
-
-                $ext      = pathinfo($file['name'], PATHINFO_EXTENSION);
-                $filename = 'admin_' . $userId . '_' . time() . '.' . strtolower($ext);
-                $destPath = $uploadDir . $filename;
-
-                if (move_uploaded_file($file['tmp_name'], $destPath)) {
-                    if (!empty($admin['profile_pic'])) {
-                        $oldPath = __DIR__ . '/../' . ltrim($admin['profile_pic'], '/');
-                        if (file_exists($oldPath)) unlink($oldPath);
-                    }
-                    $dbPath = 'uploads/profile_pics/' . $filename;
-                    $pdo->prepare('UPDATE users SET profile_pic = ? WHERE id = ? AND role = "admin"')
-                        ->execute([$dbPath, $userId]);
-                    $success = 'Profile photo updated successfully.';
-                    $stmt->execute([$userId]);
-                    $admin = $stmt->fetch();
-                } else {
-                    $errors[] = 'Failed to upload image. Please try again.';
-                }
-            }
+        if (!in_array($mimeType, $allowedTypes, true)) {
+            $error = 'Only JPG, PNG, GIF, or WebP images are allowed.';
+        } elseif ($file['size'] > $maxSize) {
+            $error = 'Image must be smaller than 2 MB.';
         } else {
-            $errors[] = 'Please select an image to upload.';
-        }
-    }
+            $uploadDir = __DIR__ . '/../uploads/profile_pics/';
+            if (!is_dir($uploadDir)) mkdir($uploadDir, 0755, true);
 
-    // ── Remove profile pic ─────────────────────────────────────────────────
-    if ($section === 'remove_avatar') {
-        if (!empty($admin['profile_pic'])) {
-            $oldPath = __DIR__ . '/../' . ltrim($admin['profile_pic'], '/');
-            if (file_exists($oldPath)) unlink($oldPath);
-        }
-        $pdo->prepare('UPDATE users SET profile_pic = NULL WHERE id = ? AND role = "admin"')
-            ->execute([$userId]);
-        $success = 'Profile photo removed.';
-        $stmt->execute([$userId]);
-        $admin = $stmt->fetch();
-    }
+            $ext         = pathinfo($file['name'], PATHINFO_EXTENSION);
+            $newFilename = 'admin_' . $userId . '_' . time() . '.' . strtolower($ext);
 
-    // ── Profile (name, email, phone) ───────────────────────────────────────
-    if ($section === 'profile') {
-        $fullName = trim($_POST['full_name'] ?? '');
-        $email    = trim($_POST['email']     ?? '');
-        $phone    = trim($_POST['phone']     ?? '');
+            if (move_uploaded_file($file['tmp_name'], $uploadDir . $newFilename)) {
+                if (!empty($admin['profile_pic'])) {
+                    $oldPath = __DIR__ . '/../' . ltrim($admin['profile_pic'], '/');
+                    if (is_file($oldPath)) @unlink($oldPath);
+                }
 
-        if ($fullName === '') $errors[] = 'Full name is required.';
-        if ($email    === '') $errors[] = 'Email is required.';
-        elseif (!filter_var($email, FILTER_VALIDATE_EMAIL)) $errors[] = 'Invalid email address.';
+                $pdo->prepare('UPDATE users SET profile_pic = ? WHERE id = ? AND role = "admin"')
+                    ->execute(['uploads/profile_pics/' . $newFilename, $userId]);
 
-        if (empty($errors) && $email !== $admin['email']) {
-            $chk = $pdo->prepare('SELECT id FROM users WHERE email = ? AND id != ?');
-            $chk->execute([$email, $userId]);
-            if ($chk->fetch()) $errors[] = 'That email is already in use by another account.';
-        }
-
-        if (empty($errors)) {
-            try {
-                $pdo->prepare('UPDATE users SET full_name = ?, email = ?, phone = ? WHERE id = ? AND role = "admin"')
-                    ->execute([$fullName, $email, $phone, $userId]);
-                $success = 'Profile updated successfully.';
+                $success = 'Profile photo updated successfully.';
                 $stmt->execute([$userId]);
                 $admin = $stmt->fetch();
-            } catch (Exception $e) {
-                $errors[] = 'An error occurred while updating profile.';
-                error_log($e->getMessage());
-            }
-        }
-    }
-
-    // ── Password ───────────────────────────────────────────────────────────
-    if ($section === 'password') {
-        $currentPw = $_POST['current_password'] ?? '';
-        $newPw     = $_POST['new_password']     ?? '';
-        $confirmPw = $_POST['confirm_password'] ?? '';
-
-        if ($currentPw === '')      $errors[] = 'Current password is required.';
-        if ($newPw === '')          $errors[] = 'New password is required.';
-        elseif (strlen($newPw) < 6) $errors[] = 'New password must be at least 6 characters.';
-        if ($newPw !== $confirmPw)  $errors[] = 'New passwords do not match.';
-
-        if (empty($errors)) {
-            if (!password_verify($currentPw, $admin['password'])) {
-                $errors[] = 'Current password is incorrect.';
             } else {
-                try {
-                    $pdo->prepare('UPDATE users SET password = ? WHERE id = ? AND role = "admin"')
-                        ->execute([password_hash($newPw, PASSWORD_DEFAULT), $userId]);
-                    $success = 'Password changed successfully.';
-                    $stmt->execute([$userId]);
-                    $admin = $stmt->fetch();
-                } catch (Exception $e) {
-                    $errors[] = 'An error occurred while changing password.';
-                    error_log($e->getMessage());
-                }
+                $error = 'Could not save the uploaded photo. Please try again.';
             }
         }
     }
 }
 
+// ── Handle photo removal ───────────────────────────────────────────────────
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_photo'])) {
+    if (!empty($admin['profile_pic'])) {
+        $oldPath = __DIR__ . '/../' . ltrim($admin['profile_pic'], '/');
+        if (is_file($oldPath)) @unlink($oldPath);
+
+        $pdo->prepare('UPDATE users SET profile_pic = NULL WHERE id = ? AND role = "admin"')
+            ->execute([$userId]);
+
+        $success = 'Profile photo removed.';
+        $stmt->execute([$userId]);
+        $admin = $stmt->fetch();
+    }
+}
+
 $avatarSrc = !empty($admin['profile_pic']) ? getBasePath() . $admin['profile_pic'] : '';
-$hasPhoto  = !empty($admin['profile_pic']);
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/navbar.php';
@@ -173,34 +113,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
 }
 .profile-section-body { padding: 20px; }
 
-.field-group { display: flex; flex-direction: column; gap: 4px; margin-bottom: 16px; }
-.field-group:last-of-type { margin-bottom: 0; }
-.field-group label { font-weight: 600; font-size: .85rem; color: #444; }
-.field-group input {
-    width: 100%; padding: 10px 12px;
-    border: 1px solid #d0d0d0; border-radius: 6px;
-    font-size: .9rem; box-sizing: border-box;
-    transition: border-color .15s;
-}
-.field-group input:focus { outline: none; border-color: var(--safety-orange, #ff6600); }
-.field-group input:disabled { background: #f5f5f5; color: #999; cursor: not-allowed; }
-.field-hint { font-size: .75rem; color: #aaa; margin: 2px 0 0; }
-
-.alert-error {
-    background: #fde7e7; border: 1px solid #f5a3a3;
-    border-left: 4px solid #e74c3c; color: #c0392b;
-    padding: 12px 14px; border-radius: 6px; margin-bottom: 20px;
-    font-size: .88rem;
-}
-.alert-error ul { margin: 6px 0 0 16px; padding: 0; }
-.alert-success {
-    background: #e7f5eb; border: 1px solid #7dd3a3;
-    border-left: 4px solid #2dbd5e; color: #1e5e3f;
-    padding: 12px 14px; border-radius: 6px; margin-bottom: 20px;
-    font-size: .88rem;
-}
-
-/* ── Avatar upload ───────────────────────────────────────────────────────── */
+/* ── Avatar ──────────────────────────────────────────────────────────────── */
 .avatar-upload-wrap { text-align: center; }
 .avatar-circle {
     width: 100px; height: 100px; border-radius: 50%;
@@ -227,23 +140,45 @@ require_once __DIR__ . '/../includes/sidebar.php';
 .avatar-circle:hover .avatar-overlay { opacity: 1; }
 .avatar-file-input { display: none; }
 .avatar-upload-hint { font-size: .75rem; color: #aaa; margin: 0 0 14px; }
+
+/* ── Read-only info fields ───────────────────────────────────────────────── */
+.info-field { margin-bottom: 14px; }
+.info-field:last-child { margin-bottom: 0; }
+.info-field label {
+    display: block; margin-bottom: 4px;
+    font-weight: 600; font-size: .85rem; color: #444;
+}
+.info-field input {
+    width: 100%; padding: 10px 12px;
+    border: 1px solid #d0d0d0; border-radius: 6px;
+    font-size: .9rem; box-sizing: border-box;
+    background: #f5f5f5; color: #999;
+    cursor: not-allowed;
+}
+
+/* ── Alerts ──────────────────────────────────────────────────────────────── */
+.alert-error {
+    background: #fde7e7; border: 1px solid #f5a3a3;
+    border-left: 4px solid #e74c3c; color: #c0392b;
+    padding: 12px 14px; border-radius: 6px; margin-bottom: 20px;
+    font-size: .88rem;
+}
+.alert-success {
+    background: #e7f5eb; border: 1px solid #7dd3a3;
+    border-left: 4px solid #2dbd5e; color: #1e5e3f;
+    padding: 12px 14px; border-radius: 6px; margin-bottom: 20px;
+    font-size: .88rem;
+}
 </style>
 
 <main>
 <div class="card profile-wrap">
     <h2>My Profile</h2>
-    <p class="muted">Manage your account information and security.</p>
+    <p class="muted">You can update your profile photo. All other details are managed by the super admin.</p>
 
-    <?php if (!empty($errors)): ?>
-        <div class="alert-error">
-            <?php if (count($errors) === 1): ?>
-                <?php echo e($errors[0]); ?>
-            <?php else: ?>
-                <ul><?php foreach ($errors as $err): ?><li><?php echo e($err); ?></li><?php endforeach; ?></ul>
-            <?php endif; ?>
-        </div>
+    <?php if ($error): ?>
+        <div class="alert-error"><strong>Error:</strong> <?php echo e($error); ?></div>
     <?php endif; ?>
-
     <?php if ($success): ?>
         <div class="alert-success">✅ <?php echo e($success); ?></div>
     <?php endif; ?>
@@ -252,21 +187,21 @@ require_once __DIR__ . '/../includes/sidebar.php';
     <div class="profile-section">
         <div class="profile-section-head">Profile Photo</div>
         <div class="profile-section-body">
-
-            <!-- Upload form -->
             <form method="POST" enctype="multipart/form-data" class="avatar-upload-wrap">
-                <input type="hidden" name="section" value="avatar">
+                <input type="hidden" name="update_photo" value="1">
                 <input type="file" name="profile_pic" id="avatarInput" class="avatar-file-input"
                        accept="image/jpeg,image/png,image/gif,image/webp"
                        onchange="previewAvatar(this)">
 
-                <div class="avatar-circle" onclick="document.getElementById('avatarInput').click();"
+                <div class="avatar-circle"
+                     onclick="document.getElementById('avatarInput').click();"
                      title="Click to change photo">
                     <img id="avatarPreview"
                          src="<?php echo $avatarSrc ? e($avatarSrc) : ''; ?>"
                          alt="Profile photo"
                          style="<?php echo $avatarSrc ? '' : 'display:none;'; ?>">
-                    <span id="avatarPlaceholder" style="<?php echo $avatarSrc ? 'display:none;' : ''; ?>">👤</span>
+                    <span id="avatarPlaceholder"
+                          style="<?php echo $avatarSrc ? 'display:none;' : ''; ?>">👤</span>
                     <div class="avatar-overlay">📷</div>
                 </div>
 
@@ -277,91 +212,42 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 </button>
             </form>
 
-            <!-- Remove form — only shown when a photo exists -->
-            <?php if ($hasPhoto): ?>
-            <form method="POST" style="text-align:center;margin-top:10px;"
-                  onsubmit="return confirm(<?php echo json_encode('Remove your profile photo?'); ?>);">
-                <input type="hidden" name="section" value="remove_avatar">
-                <button type="submit" class="btn"
-                        style="color:#c0392b;border:1px solid #f5a3a3;background:#fff;">
-                    Remove Photo
-                </button>
-            </form>
+            <?php if (!empty($admin['profile_pic'])): ?>
+                <form method="POST" style="text-align:center;margin-top:10px;"
+                      onsubmit="return confirm(<?php echo json_encode('Remove your profile photo?'); ?>);">
+                    <button type="submit" name="remove_photo" value="1"
+                            class="btn"
+                            style="color:#c0392b;border:1px solid #f5a3a3;background:#fff;">
+                        Remove Photo
+                    </button>
+                </form>
             <?php endif; ?>
-
         </div>
     </div>
 
-    <!-- ── Account Information ───────────────────────────────────────────── -->
+    <!-- ── Account Information (read-only) ──────────────────────────────── -->
     <div class="profile-section">
         <div class="profile-section-head">Account Information</div>
         <div class="profile-section-body">
-            <form method="POST">
-                <input type="hidden" name="section" value="profile">
+            <p class="muted" style="font-size:.8rem;margin:0 0 16px;">
+                Contact the super admin to update any of these details.
+            </p>
 
-                <div class="field-group">
-                    <label for="full_name">Full Name</label>
-                    <input type="text" id="full_name" name="full_name"
-                           value="<?php echo e($admin['full_name']); ?>" required>
-                </div>
-
-                <div class="field-group">
-                    <label for="email">Email Address</label>
-                    <input type="email" id="email" name="email"
-                           value="<?php echo e($admin['email']); ?>" required>
-                </div>
-
-                <div class="field-group">
-                    <label for="phone">Phone Number</label>
-                    <input type="tel" id="phone" name="phone"
-                           value="<?php echo e($admin['phone'] ?? ''); ?>"
-                           placeholder="+1234567890">
-                </div>
-
-                <button type="submit" class="btn btn-primary" style="margin-top:8px;">
-                    Save Changes
-                </button>
-            </form>
+            <div class="info-field">
+                <label>Full Name</label>
+                <input type="text" value="<?php echo e($admin['full_name']); ?>" disabled>
+            </div>
+            <div class="info-field">
+                <label>Email Address</label>
+                <input type="email" value="<?php echo e($admin['email']); ?>" disabled>
+            </div>
+            <div class="info-field">
+                <label>Phone Number</label>
+                <input type="tel" value="<?php echo e($admin['phone'] ?: '—'); ?>" disabled>
+            </div>
         </div>
     </div>
 
-    <!-- ── Change Password ───────────────────────────────────────────────── -->
-    <div class="profile-section">
-        <div class="profile-section-head">Change Password</div>
-        <div class="profile-section-body">
-            <form method="POST">
-                <input type="hidden" name="section" value="password">
-
-                <div class="field-group">
-                    <label for="current_password">Current Password</label>
-                    <input type="password" id="current_password" name="current_password"
-                           placeholder="Enter your current password" required>
-                </div>
-
-                <div class="field-group">
-                    <label for="new_password">New Password</label>
-                    <input type="password" id="new_password" name="new_password"
-                           placeholder="At least 6 characters" required minlength="6">
-                    <span class="field-hint">Minimum 6 characters.</span>
-                </div>
-
-                <div class="field-group">
-                    <label for="confirm_password">Confirm New Password</label>
-                    <input type="password" id="confirm_password" name="confirm_password"
-                           placeholder="Repeat new password" required>
-                </div>
-
-                <button type="submit" class="btn btn-primary" style="margin-top:8px;">
-                    Change Password
-                </button>
-            </form>
-        </div>
-    </div>
-
-    <p style="text-align:center;margin-top:4px;">
-        <a href="<?php echo getBasePath(); ?>admin/settings.php"
-           style="font-size:.85rem;color:#aaa;text-decoration:underline;">← Back to Settings</a>
-    </p>
 </div>
 </main>
 
@@ -373,10 +259,10 @@ function previewAvatar(input) {
         const preview     = document.getElementById('avatarPreview');
         const placeholder = document.getElementById('avatarPlaceholder');
         const uploadBtn   = document.getElementById('uploadBtn');
-        preview.src              = e.target.result;
-        preview.style.display    = '';
+        preview.src               = e.target.result;
+        preview.style.display     = '';
         placeholder.style.display = 'none';
-        uploadBtn.style.display  = 'inline-block';
+        uploadBtn.style.display   = 'inline-block';
     };
     reader.readAsDataURL(input.files[0]);
 }
