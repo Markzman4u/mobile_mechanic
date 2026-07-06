@@ -25,11 +25,26 @@ function getRequestIdFromItem($pdo, $itemId) {
     return $row ? (int) $row['request_id'] : null;
 }
 
+// ── Helper: get status for a request ──────────────────────────────────────
+function getRequestStatus($pdo, $requestId) {
+    $stmt = $pdo->prepare('SELECT status FROM requests WHERE id = :id');
+    $stmt->execute([':id' => $requestId]);
+    $row = $stmt->fetch();
+    return $row ? $row['status'] : null;
+}
+
 // ── Handle: Add service item ──────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_item'])) {
     $expandJobId = (int) $_POST['request_id'];
     $itemName    = trim($_POST['item_name'] ?? '');
     $price       = isset($_POST['price']) ? (float) $_POST['price'] : 0;
+
+    // Gate: only allow if job is in_progress
+    $currentStatus = getRequestStatus($pdo, $expandJobId);
+    if ($currentStatus !== 'in_progress') {
+        header('Location: ' . $_SERVER['PHP_SELF'] . '?expand=' . $expandJobId . '&msg=' . urlencode('Service items can only be added once the job is in progress.'));
+        exit;
+    }
 
     if ($itemName && $price > 0) {
         $stmt = $pdo->prepare('SELECT id FROM services WHERE request_id = :rid');
@@ -47,7 +62,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['add_item'])) {
         $pdo->prepare('INSERT INTO service_items (service_id, item_name, price) VALUES (:sid, :name, :price)')
             ->execute([':sid' => $serviceId, ':name' => $itemName, ':price' => $price]);
 
-        // Redirect to avoid form re-submission on page refresh
         header('Location: ' . $_SERVER['PHP_SELF'] . '?expand=' . $expandJobId . '&msg=' . urlencode('Item added successfully.'));
         exit;
     }
@@ -61,6 +75,13 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_item'])) {
 
     $expandJobId = getRequestIdFromItem($pdo, $itemId);
 
+    // Gate: only allow if job is in_progress
+    $currentStatus = $expandJobId ? getRequestStatus($pdo, $expandJobId) : null;
+    if ($currentStatus !== 'in_progress') {
+        header('Location: ' . $_SERVER['PHP_SELF'] . '?expand=' . $expandJobId . '&msg=' . urlencode('Service items can only be edited once the job is in progress.'));
+        exit;
+    }
+
     if ($itemName && $price > 0) {
         $pdo->prepare('UPDATE service_items SET item_name = :name, price = :price WHERE id = :id')
             ->execute([':name' => $itemName, ':price' => $price, ':id' => $itemId]);
@@ -73,34 +94,36 @@ if (isset($_GET['delete_item']) && ctype_digit($_GET['delete_item'])) {
     $itemId      = (int) $_GET['delete_item'];
     $expandJobId = getRequestIdFromItem($pdo, $itemId);
 
+    // Gate: only allow if job is in_progress
+    $currentStatus = $expandJobId ? getRequestStatus($pdo, $expandJobId) : null;
+    if ($currentStatus !== 'in_progress') {
+        header('Location: ' . $_SERVER['PHP_SELF'] . '?expand=' . $expandJobId . '&msg=' . urlencode('Service items can only be deleted once the job is in progress.'));
+        exit;
+    }
+
     $pdo->prepare('DELETE FROM service_items WHERE id = :id')->execute([':id' => $itemId]);
     $message = 'Item deleted successfully.';
 
-    // Redirect to keep expand state in URL, avoid re-delete on refresh
     header('Location: ' . $_SERVER['PHP_SELF'] . '?expand=' . $expandJobId . '&msg=' . urlencode($message));
     exit;
 }
 
-// ── Handle: Status update ─────────────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['update_status'])) {
-    $requestId = (int) $_POST['request_id'];
-    $newStatus = $_POST['new_status'] ?? '';
-    $expandJobId = $requestId; // keep row open even on status change
+// ── Handle: Complete job ───────────────────────────────────────────────────
+// Admin may only complete a job that is currently in_progress.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['complete_job'])) {
+    $requestId     = (int) $_POST['request_id'];
+    $currentStatus = getRequestStatus($pdo, $requestId);
 
-    $validStatuses = ['assigned', 'in_progress', 'completed'];
-    if (in_array($newStatus, $validStatuses)) {
-        $pdo->prepare('UPDATE requests SET status = :status WHERE id = :id')
-            ->execute([':status' => $newStatus, ':id' => $requestId]);
-
-        if ($newStatus === 'completed') {
-            header('Location: ' . getBasePath() . 'admin/complete_service.php?id=' . $requestId);
-            exit;
-        }
-        $message = 'Status updated successfully.';
+    if ($currentStatus === 'in_progress') {
+        header('Location: ' . getBasePath() . 'admin/complete_service.php?id=' . $requestId);
+        exit;
+    } else {
+        $expandJobId = $requestId;
+        $message = 'This job cannot be completed yet — it must be in progress first.';
     }
 }
 
-// ── Expand from GET param (after delete redirect) ─────────────────────────
+// ── Expand from GET param (after redirects) ────────────────────────────────
 if ($expandJobId === null && isset($_GET['expand']) && ctype_digit($_GET['expand'])) {
     $expandJobId = (int) $_GET['expand'];
 }
@@ -120,19 +143,21 @@ function getServiceItemsForRequest($pdo, $requestId) {
     return $stmt->fetchAll();
 }
 
-// ── Load active jobs (includes walk-in customers) ─────────────────────────
+// ── Load active jobs (assigned + in_progress) ─────────────────────────────
 $jobs = $pdo->query(
     'SELECT r.id,
+            r.mechanic_id,
             COALESCE(u.full_name, w.full_name, "Unknown") AS customer_name,
             CASE WHEN r.walkin_id IS NOT NULL THEN 1 ELSE 0 END AS is_walkin,
             r.problem_type,
+            r.diagnosis,
             m.name AS mechanic_name,
             r.status,
             r.created_at
      FROM requests r
-     LEFT JOIN users u        ON r.user_id   = u.id
-     LEFT JOIN walkin_customers w ON r.walkin_id = w.id
-     LEFT JOIN mechanics m    ON r.mechanic_id = m.id
+     LEFT JOIN users u            ON r.user_id    = u.id
+     LEFT JOIN walkin_customers w ON r.walkin_id  = w.id
+     LEFT JOIN mechanics m        ON r.mechanic_id = m.id
      WHERE r.status IN ("assigned", "in_progress")
      ORDER BY r.created_at DESC'
 )->fetchAll();
@@ -193,7 +218,25 @@ require_once __DIR__ . '/../includes/sidebar.php';
 
             .total-line { padding-top: 12px; border-top: 1px solid #ddd; color: var(--charcoal); font-weight: 700; font-size: 0.95rem; }
 
-            /* ── Walk-in badge in table ─────────────── */
+            /* ── Items locked notice ────────────────────────────────────── */
+            .items-locked-notice {
+                display: flex;
+                align-items: center;
+                gap: 10px;
+                background: #fff8f0;
+                border: 1px dashed #ffcc80;
+                border-radius: 6px;
+                padding: 12px 16px;
+                color: #b45309;
+                font-size: 0.88rem;
+                margin-top: 8px;
+            }
+            .items-locked-notice .lock-icon {
+                font-size: 1.1rem;
+                flex-shrink: 0;
+            }
+
+            /* ── Walk-in badge ──────────────────────────────────────────── */
             .badge-walkin {
                 display: inline-block;
                 background: #fff3e0;
@@ -206,6 +249,79 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 vertical-align: middle;
                 font-weight: 600;
             }
+
+            /* ── Clickable cell links ────────────────────────────────────── */
+            .cell-link {
+                color: inherit;
+                text-decoration: none;
+                font-weight: 600;
+            }
+            .cell-link:hover {
+                color: var(--safety-orange, #ff6600);
+                text-decoration: underline;
+            }
+            .cell-link-mechanic {
+                color: #3a5bbd;
+            }
+            .cell-link-mechanic:hover {
+                color: var(--safety-orange, #ff6600);
+            }
+
+            /* ── Diagnosis column ───────────────────────────────────────── */
+            th.col-diagnosis,
+            td.col-diagnosis {
+                width: 150px;
+                min-width: 110px;
+                max-width: 150px;
+            }
+
+            .diagnosis-cell {
+                display: -webkit-box;
+                -webkit-line-clamp: 3;
+                -webkit-box-orient: vertical;
+                overflow: hidden;
+                font-size: 0.82rem;
+                color: #555;
+                line-height: 1.4;
+                word-break: break-word;
+                white-space: normal;
+                cursor: default;
+            }
+            .diagnosis-cell.empty {
+                color: #bbb;
+                font-style: italic;
+            }
+
+            /* ── Actions column ─────────────────────────────────────────── */
+            th.col-actions,
+            td.col-actions {
+                width: 140px;
+                min-width: 140px;
+            }
+
+            /* Awaiting mechanic state */
+            .awaiting-label {
+                display: inline-flex;
+                align-items: center;
+                gap: 5px;
+                font-size: 0.8rem;
+                color: #888;
+                font-style: italic;
+            }
+
+            /* Complete job button */
+            .btn-complete-job {
+                width: 100%;
+                padding: 6px 0;
+                font-size: 0.82rem;
+                background: #4CAF50;
+                color: white;
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                font-weight: 600;
+            }
+            .btn-complete-job:hover { background: #45a049; }
         </style>
 
         <table>
@@ -216,106 +332,158 @@ require_once __DIR__ . '/../includes/sidebar.php';
                     <th>Customer</th>
                     <th>Problem</th>
                     <th>Mechanic</th>
+                    <th class="col-diagnosis">Diagnosis</th>
                     <th>Status</th>
                     <th>Started</th>
-                    <th>Actions</th>
+                    <th class="col-actions">Actions</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($jobs)): ?>
                     <tr>
-                        <td colspan="8" style="text-align:center;color:var(--muted);padding:20px;">No active jobs found.</td>
+                        <td colspan="9" style="text-align:center;color:var(--muted);padding:20px;">No active jobs found.</td>
                     </tr>
                 <?php else: ?>
                     <?php foreach ($jobs as $job):
-                        $items      = getServiceItemsForRequest($pdo, $job['id']);
-                        $totalItems = array_sum(array_column($items, 'price'));
-                        $isExpanded = ($expandJobId === $job['id']);
+                        $items        = getServiceItemsForRequest($pdo, $job['id']);
+                        $totalItems   = array_sum(array_column($items, 'price'));
+                        $isExpanded   = ($expandJobId === $job['id']);
+                        $isInProgress = ($job['status'] === 'in_progress');
+                        $diagTooltip  = !empty($job['diagnosis']) ? e($job['diagnosis']) : '';
                     ?>
                         <!-- ── Job Row ──────────────────────────────────── -->
                         <tr class="job-row-expandable" onclick="toggleItems(this)" data-job-id="<?php echo $job['id']; ?>">
                             <td><span class="expand-icon <?php echo $isExpanded ? 'expanded' : ''; ?>">▶</span></td>
                             <td><?php echo e($job['id']); ?></td>
-                            <td>
-                                <?php echo e($job['customer_name']); ?>
+
+                            <!-- Customer name → request detail page -->
+                            <td onclick="event.stopPropagation();">
+                                <a href="<?php echo getBasePath(); ?>admin/request_detail.php?id=<?php echo (int)$job['id']; ?>"
+                                   class="cell-link"
+                                   title="View request details">
+                                    <?php echo e($job['customer_name']); ?>
+                                </a>
                                 <?php if ($job['is_walkin']): ?>
                                     <span class="badge-walkin">Walk-in</span>
                                 <?php endif; ?>
                             </td>
+
                             <td><?php echo e($job['problem_type']); ?></td>
-                            <td><?php echo e($job['mechanic_name']); ?></td>
+
+                            <!-- Mechanic name → track mechanic page -->
+                            <td onclick="event.stopPropagation();">
+                                <?php if (!empty($job['mechanic_name']) && !empty($job['mechanic_id'])): ?>
+                                    <a href="<?php echo getBasePath(); ?>admin/track_mechanics.php?mechanic_id=<?php echo (int)$job['mechanic_id']; ?>"
+                                       class="cell-link cell-link-mechanic"
+                                       title="Track <?php echo e($job['mechanic_name']); ?> on map">
+                                        <?php echo e($job['mechanic_name']); ?>
+                                        <span style="font-size:.72rem;opacity:.7;">📍</span>
+                                    </a>
+                                <?php else: ?>
+                                    <span style="color:#bbb;">—</span>
+                                <?php endif; ?>
+                            </td>
+
+                            <!-- Diagnosis — wraps to 3 lines max, full text on hover -->
+                            <td class="col-diagnosis" onclick="event.stopPropagation();">
+                                <?php if (!empty($job['diagnosis'])): ?>
+                                    <span class="diagnosis-cell" title="<?php echo $diagTooltip; ?>">
+                                        <?php echo e($job['diagnosis']); ?>
+                                    </span>
+                                <?php else: ?>
+                                    <span class="diagnosis-cell empty">No diagnosis</span>
+                                <?php endif; ?>
+                            </td>
+
                             <td><span class="status status-<?php echo e($job['status']); ?>"><?php echo statusLabel($job['status']); ?></span></td>
                             <td><?php echo date('M d, g:i A', strtotime($job['created_at'])); ?></td>
-                            <td>
-                                <form method="post" style="display:inline;" onclick="event.stopPropagation();">
-                                    <input type="hidden" name="request_id" value="<?php echo $job['id']; ?>">
-                                    <select name="new_status" style="padding:4px;font-size:0.85rem;">
-                                        <option value="">Change Status...</option>
-                                        <?php if ($job['status'] === 'assigned'): ?>
-                                            <option value="in_progress">Start Job</option>
-                                        <?php endif; ?>
-                                        <option value="completed">Complete Job</option>
-                                    </select>
-                                    <button type="submit" name="update_status" class="btn" style="padding:4px 8px;font-size:0.85rem;margin-left:4px;">Update</button>
-                                </form>
+
+                            <!-- ── Actions ─────────────────────────────── -->
+                            <td class="col-actions" onclick="event.stopPropagation();">
+                                <?php if ($job['status'] === 'assigned'): ?>
+                                    <!-- Waiting for mechanic to start — admin has no action here -->
+                                    <span class="awaiting-label">
+                                        ⏳ Awaiting mechanic
+                                    </span>
+                                <?php elseif ($isInProgress): ?>
+                                    <!-- Admin can complete a job that is in_progress -->
+                                    <form method="post">
+                                        <input type="hidden" name="request_id" value="<?php echo $job['id']; ?>">
+                                        <button type="submit" name="complete_job" class="btn-complete-job"
+                                                onclick="return confirm('Mark this job as completed and proceed to finalize service items?');">
+                                            ✓ Complete Job
+                                        </button>
+                                    </form>
+                                <?php endif; ?>
                             </td>
                         </tr>
 
                         <!-- ── Items Drawer ────────────────────────────── -->
                         <tr class="items-row" data-job-id="<?php echo $job['id']; ?>"
                             style="display:<?php echo $isExpanded ? 'table-row' : 'none'; ?>;">
-                            <td colspan="8">
+                            <td colspan="9">
                                 <div class="items-section">
                                     <h4 style="margin:0 0 12px 0;">
                                         Service Items — Request #<?php echo e($job['id']); ?>
                                         &nbsp;<span style="font-size:0.8rem;font-weight:400;color:var(--muted);"><?php echo e($job['customer_name']); ?></span>
                                     </h4>
 
-                                    <?php if (empty($items)): ?>
-                                        <p style="color:var(--muted);font-size:0.9rem;margin:0 0 12px 0;">No items added yet.</p>
+                                    <?php if (!$isInProgress): ?>
+                                        <!-- ── Locked: job not yet in_progress ── -->
+                                        <div class="items-locked-notice">
+                                            <span class="lock-icon">🔒</span>
+                                            <span>Service items can only be added once the mechanic starts the job (<strong>In Progress</strong>).</span>
+                                        </div>
+
                                     <?php else: ?>
-                                        <div class="items-list">
-                                            <?php foreach ($items as $item): ?>
-                                                <div class="item-row" data-item-id="<?php echo $item['id']; ?>">
-                                                    <div class="item-info">
-                                                        <div class="item-name"><?php echo e($item['item_name']); ?></div>
-                                                        <div style="font-size:0.85rem;color:var(--muted);">
-                                                            $<?php echo number_format((float)$item['price'], 2); ?>
+                                        <!-- ── Unlocked: job is in_progress ───── -->
+                                        <?php if (empty($items)): ?>
+                                            <p style="color:var(--muted);font-size:0.9rem;margin:0 0 12px 0;">No items added yet.</p>
+                                        <?php else: ?>
+                                            <div class="items-list">
+                                                <?php foreach ($items as $item): ?>
+                                                    <div class="item-row" data-item-id="<?php echo $item['id']; ?>">
+                                                        <div class="item-info">
+                                                            <div class="item-name"><?php echo e($item['item_name']); ?></div>
+                                                            <div style="font-size:0.85rem;color:var(--muted);">
+                                                                $<?php echo number_format((float)$item['price'], 2); ?>
+                                                            </div>
+                                                        </div>
+                                                        <div class="item-actions">
+                                                            <button type="button" class="item-btn item-btn-edit"
+                                                                    onclick="toggleEditForm(event, <?php echo $item['id']; ?>)">Edit</button>
+                                                            <a href="<?php echo $_SERVER['PHP_SELF']; ?>?delete_item=<?php echo $item['id']; ?>"
+                                                               class="item-btn item-btn-delete"
+                                                               onclick="return confirm(<?php echo json_encode('Delete this item?'); ?>);">Delete</a>
                                                         </div>
                                                     </div>
-                                                    <div class="item-actions">
-                                                        <button type="button" class="item-btn item-btn-edit"
-                                                                onclick="toggleEditForm(event, <?php echo $item['id']; ?>)">Edit</button>
-                                                        <a href="<?php echo $_SERVER['PHP_SELF']; ?>?delete_item=<?php echo $item['id']; ?>"
-                                                           class="item-btn item-btn-delete"
-                                                           onclick="return confirm('Delete this item?');">Delete</a>
+                                                    <!-- Inline edit form -->
+                                                    <div class="item-edit-form" id="edit-form-<?php echo $item['id']; ?>">
+                                                        <form method="post" onclick="event.stopPropagation();">
+                                                            <input type="hidden" name="item_id" value="<?php echo $item['id']; ?>">
+                                                            <input type="text"   name="item_name" value="<?php echo e($item['item_name']); ?>" placeholder="Item name" required>
+                                                            <input type="number" name="price"     value="<?php echo number_format((float)$item['price'], 2); ?>" step="0.01" min="0" placeholder="Price" required>
+                                                            <button type="submit" name="update_item">Save</button>
+                                                            <button type="button" class="cancel"
+                                                                    onclick="toggleEditForm(event, <?php echo $item['id']; ?>)">Cancel</button>
+                                                        </form>
                                                     </div>
-                                                </div>
-                                                <!-- Inline edit form -->
-                                                <div class="item-edit-form" id="edit-form-<?php echo $item['id']; ?>">
-                                                    <form method="post" onclick="event.stopPropagation();">
-                                                        <input type="hidden" name="item_id" value="<?php echo $item['id']; ?>">
-                                                        <input type="text"   name="item_name" value="<?php echo e($item['item_name']); ?>" placeholder="Item name" required>
-                                                        <input type="number" name="price"     value="<?php echo number_format((float)$item['price'], 2); ?>" step="0.01" min="0" placeholder="Price" required>
-                                                        <button type="submit" name="update_item">Save</button>
-                                                        <button type="button" class="cancel"
-                                                                onclick="toggleEditForm(event, <?php echo $item['id']; ?>)">Cancel</button>
-                                                    </form>
-                                                </div>
-                                            <?php endforeach; ?>
-                                        </div>
-                                        <div class="total-line">
-                                            Total: $<?php echo number_format($totalItems, 2); ?>
-                                        </div>
+                                                <?php endforeach; ?>
+                                            </div>
+                                            <div class="total-line">
+                                                Total: $<?php echo number_format($totalItems, 2); ?>
+                                            </div>
+                                        <?php endif; ?>
+
+                                        <!-- Add new item form -->
+                                        <form method="post" class="add-item-form" onclick="event.stopPropagation();">
+                                            <input type="hidden" name="request_id" value="<?php echo $job['id']; ?>">
+                                            <input type="text"   name="item_name" placeholder="Item name (e.g., Battery)" required>
+                                            <input type="number" name="price" step="0.01" min="0" placeholder="Price" required>
+                                            <button type="submit" name="add_item">+ Add Item</button>
+                                        </form>
                                     <?php endif; ?>
 
-                                    <!-- Add new item form -->
-                                    <form method="post" class="add-item-form" onclick="event.stopPropagation();">
-                                        <input type="hidden" name="request_id" value="<?php echo $job['id']; ?>">
-                                        <input type="text"   name="item_name" placeholder="Item name (e.g., Battery)" required>
-                                        <input type="number" name="price" step="0.01" min="0" placeholder="Price" required>
-                                        <button type="submit" name="add_item">+ Add Item</button>
-                                    </form>
                                 </div>
                             </td>
                         </tr>
@@ -329,9 +497,9 @@ require_once __DIR__ . '/../includes/sidebar.php';
 <script>
     // ── Toggle expand/collapse ─────────────────────────────────────────────
     function toggleItems(row) {
-        const jobId   = row.getAttribute('data-job-id');
-        const drawer  = document.querySelector('.items-row[data-job-id="' + jobId + '"]');
-        const icon    = row.querySelector('.expand-icon');
+        const jobId  = row.getAttribute('data-job-id');
+        const drawer = document.querySelector('.items-row[data-job-id="' + jobId + '"]');
+        const icon   = row.querySelector('.expand-icon');
         if (!drawer) return;
 
         const opening = drawer.style.display === 'none' || drawer.style.display === '';

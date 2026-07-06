@@ -25,4 +25,7 @@ function getPDO()
         }
     }
     return $pdo;
-}
+} 
+?>
+
+

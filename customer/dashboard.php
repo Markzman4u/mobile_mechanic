@@ -7,6 +7,38 @@ requireLogin();
 $pdo    = getPDO();
 $userId = $_SESSION['user_id'];
 
+// ── Feedback dismiss cap (across all sessions) ────────────────────────────────
+const FEEDBACK_DISMISS_LIMIT = 3;
+
+// ── Handle "Maybe Later" dismiss ──────────────────────────────────────────────
+// When the user dismisses the feedback modal:
+//   1. Add the history_id to a session array so it won't re-appear this session.
+//   2. Increment the DB counter so across 3 separate sessions it eventually stops.
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dismiss'], $_POST['history_id'])) {
+    $dismissId = (int) $_POST['history_id'];
+
+    // Track in session — suppresses re-display for the remainder of this session.
+    if (!isset($_SESSION['dismissed_feedback'])) {
+        $_SESSION['dismissed_feedback'] = [];
+    }
+    if (!in_array($dismissId, $_SESSION['dismissed_feedback'], true)) {
+        $_SESSION['dismissed_feedback'][] = $dismissId;
+
+        // Increment DB counter only once per session dismiss (not on every page load).
+        $incStmt = $pdo->prepare(
+            'UPDATE history_records
+             SET feedback_dismiss_count = feedback_dismiss_count + 1
+             WHERE id = :id
+               AND user_id = :uid
+               AND feedback_dismiss_count < ' . FEEDBACK_DISMISS_LIMIT
+        );
+        $incStmt->execute([':id' => $dismissId, ':uid' => $userId]);
+    }
+
+    header('Location: ' . getBasePath() . 'customer/dashboard.php');
+    exit;
+}
+
 // ── Active requests count (still in requests table) ───────────────────────────
 $activeStmt = $pdo->prepare(
     'SELECT COUNT(*) FROM requests
@@ -49,6 +81,31 @@ $totalStmt = $pdo->prepare(
 );
 $totalStmt->execute([':uid' => $userId]);
 $totalHistory = (int) $totalStmt->fetchColumn();
+
+// ── Feedback prompt: most recent completed job with no feedback yet ───────────
+// Rules:
+//   - DB counter < FEEDBACK_DISMISS_LIMIT  → still eligible across sessions.
+//   - Session array check                  → skip if already dismissed this session.
+//     (Keeps modal to once per session; counter only increments on new-session dismissals.)
+$sessionDismissed = $_SESSION['dismissed_feedback'] ?? [];
+
+$feedbackPromptStmt = $pdo->prepare(
+    'SELECT h.id, h.problem_type, h.completed_at, h.feedback_dismiss_count
+     FROM history_records h
+     LEFT JOIN feedback f ON f.history_id = h.id
+     WHERE h.user_id = :uid
+       AND h.status  = "completed"
+       AND f.id IS NULL
+       AND h.feedback_dismiss_count < ' . FEEDBACK_DISMISS_LIMIT . '
+     ORDER BY h.completed_at DESC
+     LIMIT 1'
+);
+$feedbackPromptStmt->execute([':uid' => $userId]);
+$feedbackPromptJob = $feedbackPromptStmt->fetch();
+
+// Only show the modal if the job hasn't been dismissed already this session.
+$showFeedbackModal = $feedbackPromptJob
+    && !in_array((int) $feedbackPromptJob['id'], $sessionDismissed, true);
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/navbar.php';
@@ -163,4 +220,35 @@ require_once __DIR__ . '/../includes/sidebar.php';
 
     </div>
 </main>
+
+<?php if ($showFeedbackModal): ?>
+<!-- ── Feedback Prompt Modal ──────────────────────────────────────────── -->
+<div id="feedbackModalOverlay"
+     style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(0,0,0,0.5);
+            display:flex;align-items:center;justify-content:center;z-index:1000;">
+    <div class="card" style="max-width:380px;width:90%;text-align:center;">
+        <h3 style="margin-top:0;">Service Completed</h3>
+        <p class="muted">
+            We hope you're satisfied with our service on
+            "<?php echo e($feedbackPromptJob['problem_type'] ?? 'your request'); ?>".
+        </p>
+        <p class="muted">Your feedback helps us improve.</p>
+
+        <div style="margin-top:18px;display:flex;gap:10px;justify-content:center;flex-wrap:wrap;">
+            <a class="btn btn-primary"
+               href="<?php echo getBasePath(); ?>customer/give_feedback.php?history_id=<?php echo e($feedbackPromptJob['id']); ?>">
+                Give Feedback
+            </a>
+            <!-- Posts back to dashboard.php; dismiss is handled at the top of this file. -->
+            <form method="post"
+                  action="<?php echo getBasePath(); ?>customer/dashboard.php"
+                  style="display:inline;">
+                <input type="hidden" name="history_id" value="<?php echo e($feedbackPromptJob['id']); ?>">
+                <button type="submit" name="dismiss" value="1" class="btn">Maybe Later</button>
+            </form>
+        </div>
+    </div>
+</div>
+<?php endif; ?>
+
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

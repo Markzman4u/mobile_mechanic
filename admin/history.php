@@ -13,9 +13,6 @@ $pdo     = getPDO();
 $message = '';
 $error   = '';
 
-// ── Toggle: show hidden records ───────────────────────────────────────────────
-$showHidden = isset($_GET['show_hidden']) && $_GET['show_hidden'] === '1';
-
 // ── Handle: Hide Selected ─────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hide_selected'])) {
     $ids = array_filter(array_map('intval', (array)($_POST['selected_ids'] ?? [])));
@@ -29,21 +26,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hide_selected'])) {
     }
 }
 
-// ── Handle: Unhide Selected ───────────────────────────────────────────────────
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['unhide_selected'])) {
-    $ids = array_filter(array_map('intval', (array)($_POST['selected_ids'] ?? [])));
-    if (!empty($ids)) {
-        $placeholders = implode(',', array_fill(0, count($ids), '?'));
-        $pdo->prepare("UPDATE history_records SET hidden_by_admin = FALSE WHERE id IN ($placeholders)")
-            ->execute(array_values($ids));
-        $message = count($ids) . ' record(s) restored successfully.';
-    } else {
-        $error = 'No records selected.';
-    }
-}
-
-// ── Load history records ──────────────────────────────────────────────────────
-$filter  = $showHidden ? 'WHERE hr.hidden_by_admin = TRUE' : 'WHERE hr.hidden_by_admin = FALSE';
+// ── Load history records (active only) ───────────────────────────────────────
 $records = $pdo->query(
     "SELECT hr.id,
             hr.request_id,
@@ -57,12 +40,12 @@ $records = $pdo->query(
             hr.walkin_id,
             CASE WHEN hr.walkin_id IS NOT NULL THEN 1 ELSE 0 END AS is_walkin
      FROM history_records hr
-     $filter
+     WHERE hr.hidden_by_admin = FALSE
      ORDER BY hr.completed_at DESC"
 )->fetchAll();
 
 // ── Count per tab for badges ──────────────────────────────────────────────────
-$countAll      = count($records);
+$countAll       = count($records);
 $countCompleted = 0;
 $countRejected  = 0;
 $countWalkin    = 0;
@@ -79,25 +62,10 @@ require_once __DIR__ . '/../includes/sidebar.php';
 <main>
 <div class="card">
 
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:6px;">
-        <div>
-            <h2>Service History</h2>
-            <p class="muted">Archive of completed and rejected jobs.</p>
-        </div>
-        <!-- Toggle hidden/visible view -->
-        <a href="?show_hidden=<?php echo $showHidden ? '0' : '1'; ?>"
-           class="btn"
-           style="font-size:0.85rem;padding:7px 14px;">
-           <!-- check this part latter it is 🗄 View Hidden Records -->
-            <?php echo $showHidden ? '← Back to Active Records' : ''; ?>
-        </a>
+    <div style="margin-bottom:6px;">
+        <h2>Service History</h2>
+        <p class="muted">Archive of completed and rejected jobs.</p>
     </div>
-
-    <?php if ($showHidden): ?>
-        <div style="background:#fff8f0;border:1px solid #ffd8b0;color:#995500;padding:10px 14px;border-radius:6px;margin-bottom:16px;font-size:0.9rem;">
-            Showing <strong>hidden records</strong>. These are not visible to customers or on the main history view.
-        </div>
-    <?php endif; ?>
 
     <?php if ($message): ?>
         <div style="background:#e8f7e9;border:1px solid #8bc34a;color:#2f6627;padding:12px;border-radius:6px;margin-bottom:16px;">
@@ -173,19 +141,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .btn-danger:hover { background: #c0392b; }
         .btn-danger:disabled { opacity: 0.45; cursor: not-allowed; }
 
-        .btn-restore {
-            background: #5cb85c;
-            color: #fff;
-            border: none;
-            padding: 8px 14px;
-            border-radius: 5px;
-            cursor: pointer;
-            font-size: 0.875rem;
-            white-space: nowrap;
-        }
-        .btn-restore:hover { background: #449d44; }
-        .btn-restore:disabled { opacity: 0.45; cursor: not-allowed; }
-
         /* ── Selection bar ─────────────────────────────────────────────── */
         #selection-bar {
             display: none;
@@ -210,7 +165,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .status-completed { background:#e8f7e9; color:#2f6627; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
         .status-rejected  { background:#fff4f4; color:#a94442; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
 
-        /* ── Walk-in badge (matches active_jobs.php) ───────────────────── */
+        /* ── Walk-in badge ─────────────────────────────────────────────── */
         .badge-walkin {
             display: inline-block;
             background: #fff3e0;
@@ -256,19 +211,11 @@ require_once __DIR__ . '/../includes/sidebar.php';
             <input type="search" id="search-input"
                    placeholder="Search by customer, mechanic, problem, or request ID…">
 
-            <?php if ($showHidden): ?>
-                <button type="submit" name="unhide_selected" id="btn-action"
-                        class="btn-restore" disabled
-                        onclick="return confirm('Restore the selected record(s) to the main history view?')">
-                    ↩ Restore Selected
-                </button>
-            <?php else: ?>
-                <button type="submit" name="hide_selected" id="btn-action"
-                        class="btn-danger" disabled
-                        onclick="return confirm('Hide the selected record(s)? You can restore them from the hidden records view.')">
-                    🗄 Hide Selected
-                </button>
-            <?php endif; ?>
+            <button type="submit" name="hide_selected" id="btn-action"
+                    class="btn-danger" disabled
+                    onclick="return confirm('Hide the selected record(s)? You can restore them from the database.')">
+                🗄 Hide Selected
+            </button>
         </div>
 
         <!-- ── Selection feedback bar ───────────────────────────────────── -->
@@ -300,7 +247,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 <?php if (empty($records)): ?>
                     <tr id="empty-row">
                         <td colspan="9" style="text-align:center;color:var(--muted);padding:20px;">
-                            <?php echo $showHidden ? 'No hidden records found.' : 'No history records found.'; ?>
+                            No history records found.
                         </td>
                     </tr>
                 <?php else: ?>
@@ -383,9 +330,9 @@ require_once __DIR__ . '/../includes/sidebar.php';
         rows.forEach(row => {
             const matchesFilter =
                 activeFilter === 'all'       ? true :
-                activeFilter === 'completed' ? row.dataset.status  === 'completed' :
-                activeFilter === 'rejected'  ? row.dataset.status  === 'rejected'  :
-                activeFilter === 'walkin'    ? row.dataset.walkin  === '1'         :
+                activeFilter === 'completed' ? row.dataset.status === 'completed' :
+                activeFilter === 'rejected'  ? row.dataset.status === 'rejected'  :
+                activeFilter === 'walkin'    ? row.dataset.walkin === '1'         :
                 true;
 
             const matchesSearch = !searchQuery || row.dataset.search.includes(searchQuery);
