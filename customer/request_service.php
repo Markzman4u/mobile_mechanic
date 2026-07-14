@@ -25,10 +25,14 @@ $uStmt = $pdo->prepare(
 $uStmt->execute([$user_id]);
 $userRow = $uStmt->fetch();
 
-$isNewDay     = !$userRow['cancel_date'] || $userRow['cancel_date'] !== date('Y-m-d');
-$blockedUntil = $isNewDay ? null : $userRow['cancel_blocked_until'];
-$isBlocked    = $blockedUntil && strtotime($blockedUntil) > time();
+$isNewDay       = !$userRow['cancel_date'] || $userRow['cancel_date'] !== date('Y-m-d');
+$cancelCount    = $isNewDay ? 0 : (int)$userRow['cancel_count_today'];
+$blockedUntil   = $isNewDay ? null : $userRow['cancel_blocked_until'];
+$isBlocked      = $blockedUntil && strtotime($blockedUntil) > time();
 $blockedUntilTs = $isBlocked ? strtotime($blockedUntil) : 0;
+
+// Current block duration (for display on the block screen)
+$currentBlockMins = $isBlocked ? ($cancelCount - 1) * 5 : 0;
 
 $error = '';
 
@@ -213,6 +217,40 @@ require_once __DIR__ . '/../includes/sidebar.php';
     flex-wrap: wrap;
 }
 
+/* ── Escalation table on block screen ──────────────────────────────────── */
+.escalation-table {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 6px;
+    margin: 0 auto 24px;
+    text-align: left;
+}
+.escalation-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #fafafa;
+    border: 1px solid #f0f0f0;
+    border-radius: 8px;
+    padding: 7px 14px;
+    font-size: .84rem;
+}
+.escalation-row.current {
+    background: #fff3e0;
+    border-color: #ffcc80;
+    font-weight: 700;
+    color: #e65100;
+}
+.escalation-row .esc-cancel {
+    min-width: 80px;
+    color: #888;
+    font-size: .78rem;
+}
+.escalation-row.current .esc-cancel { color: #e65100; }
+.escalation-row .esc-block {
+    font-weight: 600;
+}
+
 /* ── Active request badge ───────────────────────────────────────────────── */
 .active-request-badge {
     display: inline-flex;
@@ -282,12 +320,33 @@ require_once __DIR__ . '/../includes/sidebar.php';
     <!-- ── CANCEL COOLDOWN BLOCK ─────────────────────────────────────────── -->
     <div class="block-screen">
         <span class="block-screen-icon">🚫</span>
-        <h3>New Requests Temporarily Blocked</h3>
+        <h3>New Requests Blocked for <?php echo $currentBlockMins; ?> Minutes</h3>
         <p>
-            You've cancelled multiple requests today.<br>
-            After 2 cancellations, each additional cancel triggers a 5-minute cooldown.<br>
-            Please wait for the timer to expire before submitting a new request.
+            You've cancelled <strong><?php echo $cancelCount; ?></strong> request<?php echo $cancelCount !== 1 ? 's' : ''; ?> today.
+            Each cancellation from the 2nd onward adds 5 more minutes to the cooldown.
         </p>
+
+        <!-- Escalation breakdown -->
+        <div class="escalation-table">
+            <?php
+            // Show rows for cancels 2 through max(cancelCount + 1, 5) so the user
+            // can see where they are and what's coming.
+            $showUpTo = max($cancelCount + 1, 5);
+            for ($n = 2; $n <= $showUpTo; $n++):
+                $mins = ($n - 1) * 5;
+                $isCurrent = ($n === $cancelCount);
+            ?>
+            <div class="escalation-row <?php echo $isCurrent ? 'current' : ''; ?>">
+                <span class="esc-cancel">
+                    <?php echo $isCurrent ? '👉 ' : ''; ?>Cancel #<?php echo $n; ?>
+                </span>
+                <span class="esc-block">
+                    <?php echo $mins; ?> min block
+                    <?php echo $isCurrent ? '← you are here' : ''; ?>
+                </span>
+            </div>
+            <?php endfor; ?>
+        </div>
 
         <div class="block-screen-timer" id="blockScreenTimer">
             <?php

@@ -21,9 +21,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hide_selected'])) {
     if (!empty($ids)) {
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
 
-        // Only allow hiding records that belong to this user.
-        // hidden_by_admin is intentionally NOT checked here:
-        // admin soft-deletes are admin-side only and do not affect the customer view.
         $pdo->prepare(
             "UPDATE history_records
              SET hidden_by_user = TRUE
@@ -39,7 +36,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hide_selected'])) {
 
 // ── Handle: Hide All ──────────────────────────────────────────────────────────
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hide_all'])) {
-    // Same here: admin's hidden_by_admin flag is irrelevant to customer hide-all.
     $pdo->prepare(
         "UPDATE history_records
          SET hidden_by_user = TRUE
@@ -51,9 +47,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hide_all'])) {
 }
 
 // ── Load history records for this user ───────────────────────────────────────
-// NOTE: hidden_by_admin is deliberately excluded from this filter.
-// Admin soft-deletes only affect the admin's history view, not the customer's.
-// Only hidden_by_user controls visibility here.
 $stmt = $pdo->prepare(
     "SELECT hr.id,
             hr.request_id,
@@ -62,9 +55,10 @@ $stmt = $pdo->prepare(
             hr.mechanic_name,
             hr.total_amount,
             hr.completed_at,
-            hr.request_created_at
+            hr.request_created_at,
+            hr.payment_status
      FROM history_records hr
-     WHERE hr.user_id       = :uid
+     WHERE hr.user_id        = :uid
        AND hr.hidden_by_user = FALSE
      ORDER BY hr.completed_at DESC"
 );
@@ -207,6 +201,32 @@ require_once __DIR__ . '/../includes/sidebar.php';
         .status-completed { background:#e8f7e9; color:#2f6627; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
         .status-rejected  { background:#fff4f4; color:#a94442; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
 
+        /* ── Action buttons cell ───────────────────────────────────────── */
+        .action-cell {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+        .btn-receipt {
+            background: #fff;
+            color: #2f6627;
+            border: 1.5px solid #2f6627;
+            padding: 4px 12px;
+            border-radius: 5px;
+            font-size: 0.82rem;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            white-space: nowrap;
+            display: inline-block;
+            transition: background 0.15s, color 0.15s;
+        }
+        .btn-receipt:hover {
+            background: #2f6627;
+            color: #fff;
+        }
+
         mark { background: #ffe082; border-radius: 2px; padding: 0 2px; }
     </style>
 
@@ -267,7 +287,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
                     <th>Status</th>
                     <th>Completed</th>
                     <th>Amount</th>
-                    <th>Invoice</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -288,6 +308,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
                                 ? date('M d Y', strtotime($rec['completed_at']))
                                 : '')
                         );
+                        $isPaid      = ($rec['payment_status'] ?? '') === 'paid';
+                        $isCompleted = $rec['status'] === 'completed';
                     ?>
                         <tr data-search="<?php echo e($searchData); ?>"
                             data-status="<?php echo e($rec['status']); ?>">
@@ -316,15 +338,23 @@ require_once __DIR__ . '/../includes/sidebar.php';
                                     : '—'; ?>
                             </td>
                             <td>
-                                <?php if ($rec['status'] === 'completed'): ?>
-                                    <a href="<?php echo getBasePath(); ?>customer/invoice.php?history_id=<?php echo $rec['id']; ?>"
-                                       class="btn btn-primary"
-                                       style="padding:4px 12px;font-size:0.82rem;">
-                                        View Invoice
-                                    </a>
-                                <?php else: ?>
-                                    <span style="color:var(--muted);font-size:0.82rem;">N/A</span>
-                                <?php endif; ?>
+                                <div class="action-cell">
+                                    <?php if ($isCompleted): ?>
+                                        <a href="<?php echo getBasePath(); ?>customer/invoice.php?history_id=<?php echo $rec['id']; ?>"
+                                           class="btn btn-primary"
+                                           style="padding:4px 12px;font-size:0.82rem;">
+                                            View Invoice
+                                        </a>
+                                        <?php if ($isPaid): ?>
+                                            <a href="<?php echo getBasePath(); ?>customer/view_receipt.php?id=<?php echo $rec['id']; ?>"
+                                               class="btn-receipt">
+                                                🧾 Receipt
+                                            </a>
+                                        <?php endif; ?>
+                                    <?php else: ?>
+                                        <span style="color:var(--muted);font-size:0.82rem;">N/A</span>
+                                    <?php endif; ?>
+                                </div>
                             </td>
                         </tr>
                     <?php endforeach; ?>

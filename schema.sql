@@ -17,44 +17,23 @@ CREATE TABLE IF NOT EXISTS users (
     date_of_birth DATE NOT NULL,
     gender        ENUM('male','female') NOT NULL,
 
-    -- Super admin flag
-    -- TRUE  = shop owner / root admin; created via SQL on setup.
-    --         Can access super_admin/ portal and manage staff admins.
-    -- FALSE = regular customer OR staff admin (determined by `role`).
-    --         Staff admins cannot create other admins.
-    -- Only one super admin is expected per deployment.
-    -- Physical promotion restricted to DB admin via direct SQL UPDATE.
-    -- Uniqueness is enforced by the trg_one_superadmin_insert /
-    -- trg_one_superadmin_update triggers below.
     is_superadmin BOOLEAN NOT NULL DEFAULT FALSE,
-
-    -- Account control
-    -- is_disabled : set by super admin to temporarily block a customer or staff admin's login.
-    --               Super admin account cannot be disabled through the UI.
     is_disabled   BOOLEAN NOT NULL DEFAULT FALSE,
 
-    -- Session tracking (mirrors mechanic table pattern)
     last_login  TIMESTAMP NULL,
     last_logout TIMESTAMP NULL,
 
-    -- Cancel spam prevention (registered customers only; walk-ins excluded)
-    -- cancel_count_today    : number of cancellations made on cancel_date.
-    --                         Reset to 0 automatically when cancel_date < CURDATE().
-    -- cancel_date           : the calendar date the current count applies to.
-    -- cancel_blocked_until  : if NOT NULL and > NOW(), the customer cannot submit
-    --                         a new request. Set to NOW() + 5 minutes when
-    --                         cancel_count_today reaches 2. NULL otherwise.
     cancel_count_today   TINYINT  NOT NULL DEFAULT 0,
     cancel_date          DATE     NULL,
     cancel_blocked_until DATETIME NULL,
+
+    base_salary DECIMAL(10,2) NOT NULL DEFAULT 0.00,
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ======================
 -- TRIGGER: ENFORCE SINGLE SUPER ADMIN (INSERT)
--- Fires before any INSERT on users.
--- Blocks the insert if is_superadmin = TRUE and a super admin already exists.
 -- ======================
 DROP TRIGGER IF EXISTS trg_one_superadmin_insert;
 DELIMITER $$
@@ -73,9 +52,6 @@ DELIMITER ;
 
 -- ======================
 -- TRIGGER: ENFORCE SINGLE SUPER ADMIN (UPDATE)
--- Fires before any UPDATE on users.
--- Blocks the update if it would promote a second row to is_superadmin = TRUE.
--- Allows the existing super admin to update their own row freely.
 -- ======================
 DROP TRIGGER IF EXISTS trg_one_superadmin_update;
 DELIMITER $$
@@ -103,16 +79,6 @@ CREATE TABLE IF NOT EXISTS walkin_customers (
     address       TEXT,
     date_of_birth DATE NOT NULL,
     gender        ENUM('male','female') NOT NULL,
-
-    -- Vehicle info (mirrors the vehicle fields on the requests table)
-    -- vehicle_make: selected from a predefined list; 'Other' allows free-text entry via vehicle_make_other.
-    -- vehicle_make_other: used only when vehicle_make = 'Other'.
-    -- vehicle_model: always free text.
-    -- vehicle_year: 4-digit year, e.g. 2019. NULL if not provided.
-    vehicle_make       VARCHAR(100) NULL,
-    vehicle_make_other VARCHAR(100) NULL,
-    vehicle_model      VARCHAR(100) NULL,
-    vehicle_year       SMALLINT     NULL,
 
     created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
@@ -144,6 +110,9 @@ CREATE TABLE IF NOT EXISTS mechanics (
     last_login  TIMESTAMP NULL,
     last_logout TIMESTAMP NULL,
 
+    base_salary     DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    commission_rate DECIMAL(5,2)  NOT NULL DEFAULT 0.00,
+
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_mechanics_status     (status),
@@ -159,11 +128,6 @@ CREATE TABLE IF NOT EXISTS requests (
     user_id   INT NULL,
     walkin_id INT NULL,
 
-    -- Vehicle info
-    -- vehicle_make: selected from a predefined list; 'Other' allows free-text entry via vehicle_make_other.
-    -- vehicle_make_other: used only when vehicle_make = 'Other'.
-    -- vehicle_model: always free text (too many models to enumerate).
-    -- vehicle_year: 4-digit year, e.g. 2019. NULL if not provided.
     vehicle_make       VARCHAR(100) NULL,
     vehicle_make_other VARCHAR(100) NULL,
     vehicle_model      VARCHAR(100) NULL,
@@ -178,23 +142,25 @@ CREATE TABLE IF NOT EXISTS requests (
 
     diagnosis TEXT,
 
-    -- 'cancelled' : set by the customer while status is still 'pending'.
-    --               Only pending requests can be cancelled — assigned/in_progress cannot.
-    --               Record is retained for auditing; filtered out of active views.
     status ENUM('pending','assigned','in_progress','completed','rejected','cancelled') DEFAULT 'pending',
 
     rejection_reason TEXT NULL,
 
-    mechanic_id INT NULL,
+    mechanic_id  INT NULL,
+
+    assigned_by  INT NULL,
+    completed_by INT NULL,
 
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     hidden_by_user  BOOLEAN DEFAULT FALSE,
     hidden_by_admin BOOLEAN DEFAULT FALSE,
 
-    FOREIGN KEY (user_id)     REFERENCES users(id)            ON DELETE CASCADE,
-    FOREIGN KEY (walkin_id)   REFERENCES walkin_customers(id) ON DELETE CASCADE,
-    FOREIGN KEY (mechanic_id) REFERENCES mechanics(id)        ON DELETE SET NULL
+    FOREIGN KEY (user_id)      REFERENCES users(id)            ON DELETE CASCADE,
+    FOREIGN KEY (walkin_id)    REFERENCES walkin_customers(id) ON DELETE CASCADE,
+    FOREIGN KEY (mechanic_id)  REFERENCES mechanics(id)        ON DELETE SET NULL,
+    FOREIGN KEY (assigned_by)  REFERENCES users(id)            ON DELETE SET NULL,
+    FOREIGN KEY (completed_by) REFERENCES users(id)            ON DELETE SET NULL
 );
 
 -- ======================
@@ -211,15 +177,176 @@ CREATE TABLE IF NOT EXISTS services (
 );
 
 -- ======================
+-- PARTS CATALOG
+-- Pre-catalogued parts with known buy/sell prices and stock tracking.
+-- Used by service_items.catalog_id when picking from catalog.
+-- Free-text (uncatalogued) parts leave catalog_id NULL.
+-- cost_price  = shop's purchase cost (default for catalog parts).
+-- sell_price  = default charge to customer (admin may override per invoice line).
+-- stock_quantity      = current units on hand; decremented by app layer when part is used on a job.
+-- low_stock_threshold = alert when stock_quantity falls at or below this value. 0 = no alert.
+-- is_active   = FALSE hides the part from new invoices but preserves history references.
+--               Super admin can toggle; parts are NEVER hard-deleted once used on a job.
+-- ======================
+CREATE TABLE IF NOT EXISTS parts_catalog (
+    id          INT AUTO_INCREMENT PRIMARY KEY,
+    name        VARCHAR(150) NOT NULL,
+    sku         VARCHAR(50)  NULL,
+    description TEXT         NULL,
+    cost_price  DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    sell_price  DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    stock_quantity      INT NOT NULL DEFAULT 0,
+    low_stock_threshold INT NOT NULL DEFAULT 0,
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_by  INT NULL,
+    created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+
+    INDEX idx_parts_catalog_is_active (is_active),
+    INDEX idx_parts_catalog_name      (name)
+);
+
+-- ======================
+-- BALANCE LEDGER
+-- Moved BEFORE parts_catalog_log because parts_catalog_log holds a FK to balance_ledger(id).
+-- MySQL requires the referenced table to exist at CREATE TABLE time.
+--
+-- Append-only audit trail of every money movement.
+-- Current balance = SUM(amount WHERE direction='in') - SUM(amount WHERE direction='out')
+--
+-- Written by the application layer on:
+--   type='payment_in'         direction='in'  — customer payment recorded
+--   type='top_up'             direction='in'  — super admin manual deposit
+--   type='expense'            direction='out' — expense status flipped to 'paid' (NOT on insert)
+--   type='payroll'            direction='out' — payroll_record flipped to 'paid'
+--   type='inventory_purchase' direction='out' — parts added to inventory (new part OR restock)
+--                                               by super admin (any qty) or staff admin (max 10/tx)
+--                                               amount = cost_price × quantity_added
+--
+-- reference_id links to:
+--   payments.id          for payment_in
+--   expenses.id          for expense
+--   payroll_records.id   for payroll
+--   parts_catalog_log.id for inventory_purchase
+--   NULL                 for top_up
+--
+-- NEVER delete or update rows — reverse with a correction entry.
+-- ======================
+CREATE TABLE IF NOT EXISTS balance_ledger (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+
+    type         ENUM('payment_in','top_up','expense','payroll','inventory_purchase') NOT NULL,
+    direction    ENUM('in','out') NOT NULL,
+    amount       DECIMAL(10,2) NOT NULL,
+
+    reference_id INT NULL,
+    notes        TEXT NULL,
+    created_by   INT NULL,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE SET NULL,
+
+    INDEX idx_ledger_type       (type),
+    INDEX idx_ledger_direction  (direction),
+    INDEX idx_ledger_created_at (created_at)
+);
+
+-- ======================
+-- PARTS CATALOG LOG
+-- Append-only audit trail of every stock movement on parts_catalog.
+-- Written by the application layer whenever stock changes:
+--
+--   action='add_new'  — super admin creates a new part with initial stock.
+--                       quantity_change = initial stock_quantity.
+--                       cost_per_unit   = parts_catalog.cost_price at creation time.
+--                       balance_ledger row written: type='inventory_purchase', direction='out',
+--                       amount = cost_per_unit * quantity_change.
+--
+--   action='restock'  — super admin OR staff admin adds more units to an existing part.
+--                       quantity_change = units added (positive).
+--                       cost_per_unit   = parts_catalog.cost_price at restock time.
+--                       balance_ledger row written: same as above.
+--                       Staff admin restock is capped at 10 units per transaction (app layer).
+--
+--   action='used'     — app layer decrements stock when a part is added to a service invoice.
+--                       quantity_change = units consumed (stored as negative value).
+--                       cost_per_unit   = NULL (no cash movement; cost was already paid at purchase).
+--                       No balance_ledger row.
+--
+--   action='adjusted' — super admin manual correction (e.g. stock count after audit).
+--                       quantity_change = delta (positive or negative).
+--                       cost_per_unit   = NULL.
+--                       No balance_ledger row (adjustments are not cash events).
+--
+-- balance_ledger_id links to the ledger row written for add_new / restock actions.
+-- NULL for 'used' and 'adjusted' actions which produce no ledger entry.
+--
+-- role_at_time captures whether the action was taken by 'super_admin' or 'staff_admin'
+-- so audit reports can distinguish emergency restocks from normal purchasing.
+-- ======================
+CREATE TABLE IF NOT EXISTS parts_catalog_log (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+
+    part_id      INT NOT NULL,
+    action       ENUM('add_new','restock','used','adjusted') NOT NULL,
+
+    quantity_change  INT           NOT NULL,   -- positive = stock added; negative = stock consumed
+    cost_per_unit    DECIMAL(10,2) NULL,        -- NULL for 'used' and 'adjusted'
+    total_cost       DECIMAL(10,2) NULL,        -- cost_per_unit * ABS(quantity_change); NULL for non-cash actions
+
+    balance_ledger_id INT NULL,                 -- FK to balance_ledger row; NULL for 'used'/'adjusted'
+
+    performed_by  INT  NULL,                    -- users.id of the staff or super admin
+    role_at_time  ENUM('super_admin','staff_admin') NOT NULL,
+    notes         TEXT NULL,
+
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (part_id)           REFERENCES parts_catalog(id)  ON DELETE CASCADE,
+    FOREIGN KEY (performed_by)      REFERENCES users(id)          ON DELETE SET NULL,
+    FOREIGN KEY (balance_ledger_id) REFERENCES balance_ledger(id) ON DELETE SET NULL,
+
+    INDEX idx_parts_log_part_id      (part_id),
+    INDEX idx_parts_log_action       (action),
+    INDEX idx_parts_log_performed_by (performed_by),
+    INDEX idx_parts_log_created_at   (created_at)
+);
+
+-- ======================
 -- SERVICE ITEMS (DETAILS)
+-- type:
+--   'labor' — mechanic work/time; pure revenue, no cost tracked.
+--   'part'  — physical parts.
+--              catalog_id SET  → cost_price auto-copied from parts_catalog at insert time.
+--                                stock_quantity decremented by quantity in app layer.
+--                                parts_catalog_log row written (action='used').
+--              catalog_id NULL → free-text part; admin enters cost_price and price manually.
+--                                cost_price NULL means revenue-only (admin left it blank).
+--   'fee'   — call-out fee, diagnostic fee, etc. Pure revenue like labor.
+--   'other' — anything that does not fit the above.
+-- price      = what the customer is charged per unit.
+-- cost_price = shop's cost per unit.
+--              Catalog parts: copied from parts_catalog.cost_price at insert time.
+--              Free-text parts: entered manually by admin; NULL if unknown.
+--              Labor / fee / other: always NULL.
+-- quantity   = units used; defaults to 1. Line total = price * quantity.
 -- ======================
 CREATE TABLE IF NOT EXISTS service_items (
     id         INT AUTO_INCREMENT PRIMARY KEY,
     service_id INT NOT NULL,
-    item_name  VARCHAR(100),
-    price      DECIMAL(10,2),
+    catalog_id INT NULL,
+    item_name  VARCHAR(150) NOT NULL,
+    quantity   INT NOT NULL DEFAULT 1,
+    price      DECIMAL(10,2) NOT NULL,
+    cost_price DECIMAL(10,2) NULL,
+    type       ENUM('labor','part','fee','other') NOT NULL DEFAULT 'other',
 
-    FOREIGN KEY (service_id) REFERENCES services(id) ON DELETE CASCADE
+    FOREIGN KEY (service_id) REFERENCES services(id)      ON DELETE CASCADE,
+    FOREIGN KEY (catalog_id) REFERENCES parts_catalog(id) ON DELETE SET NULL,
+
+    INDEX idx_service_items_catalog_id (catalog_id)
 );
 
 -- ======================
@@ -256,26 +383,37 @@ CREATE TABLE IF NOT EXISTS notifications (
 
 -- ======================
 -- HISTORY RECORDS
+-- Denormalized snapshot of every closed request (completed / rejected / cancelled).
+-- No FK constraints on most snapshot fields intentionally — archive records must
+-- survive deletion of the source user, mechanic, or walk-in customer.
+--
+-- Snapshot fields added in this version:
+--   customer_email    — preserved so contact info survives account/walk-in deletion.
+--   customer_address  — walk-in customers carry an address; snapshotted here for the same reason.
+--   payment_method    — copied from payments table when payment is recorded; lets the
+--                       receipt page render without an extra JOIN.
+--   payment_reference — same: reference number (e.g. mobile-money transaction ID) frozen at
+--                       payment time so the receipt is fully self-contained.
 -- ======================
 CREATE TABLE IF NOT EXISTS history_records (
     id INT AUTO_INCREMENT PRIMARY KEY,
 
     request_id INT NOT NULL,
 
-    user_id         INT NULL,
-    walkin_id       INT NULL,
-    is_walkin       BOOLEAN NOT NULL DEFAULT FALSE,
-    customer_name   VARCHAR(100),
-    customer_phone  VARCHAR(20),
-    customer_gender ENUM('male','female') NULL,
-    customer_dob    DATE NULL,
+    user_id          INT NULL,
+    walkin_id        INT NULL,
+    is_walkin        BOOLEAN NOT NULL DEFAULT FALSE,
+    customer_name    VARCHAR(100),
+    customer_email   VARCHAR(100) NULL,   -- snapshot; survives user/walk-in deletion
+    customer_phone   VARCHAR(20),
+    customer_address TEXT NULL,           -- walk-in address snapshot
+    customer_gender  ENUM('male','female') NULL,
+    customer_dob     DATE NULL,
 
     mechanic_id     INT NULL,
     mechanic_name   VARCHAR(100),
     mechanic_gender ENUM('male','female') NULL,
 
-    -- Vehicle info snapshot (copied from requests at completion/rejection/cancellation time)
-    -- Stored as resolved display value: if make was 'Other', vehicle_make holds vehicle_make_other.
     vehicle_make  VARCHAR(100) NULL,
     vehicle_model VARCHAR(100) NULL,
     vehicle_year  SMALLINT     NULL,
@@ -289,11 +427,16 @@ CREATE TABLE IF NOT EXISTS history_records (
 
     diagnosis TEXT,
 
-    -- 'cancelled' : customer cancelled while request was still pending.
-    --               mechanic_id/mechanic_name will be NULL; total_amount will be 0.00.
     status           ENUM('completed','rejected','cancelled') NOT NULL,
     rejection_reason TEXT,
     total_amount     DECIMAL(10,2) DEFAULT 0.00,
+
+    payment_status    ENUM('unpaid','paid') NOT NULL DEFAULT 'unpaid',
+    payment_method    ENUM('cash','mobile_money','bank_transfer','card','other') NULL, -- snapshot from payments
+    payment_reference VARCHAR(100) NULL,                                               -- snapshot from payments
+
+    assigned_by_name  VARCHAR(100) NULL,
+    completed_by_name VARCHAR(100) NULL,
 
     request_created_at TIMESTAMP NULL,
     completed_at       TIMESTAMP NULL,
@@ -310,19 +453,148 @@ CREATE TABLE IF NOT EXISTS history_records (
     INDEX idx_history_request_created (request_created_at),
     INDEX idx_history_completed_at    (completed_at),
     INDEX idx_history_is_walkin       (is_walkin),
-    INDEX idx_history_vehicle_make    (vehicle_make)
+    INDEX idx_history_vehicle_make    (vehicle_make),
+    INDEX idx_history_payment_status  (payment_status)
 );
 
 -- ======================
 -- HISTORY SERVICE ITEMS
+-- Snapshot of service_items at job close time.
+-- catalog_id preserved for traceability; price, cost_price, quantity frozen at snapshot time
+-- so historical P&L never changes if catalog prices or stock are updated later.
 -- ======================
 CREATE TABLE IF NOT EXISTS history_service_items (
     id         INT AUTO_INCREMENT PRIMARY KEY,
     history_id INT NOT NULL,
-    item_name  VARCHAR(100),
-    price      DECIMAL(10,2),
+    catalog_id INT NULL,
+    item_name  VARCHAR(150) NOT NULL,
+    quantity   INT NOT NULL DEFAULT 1,
+    price      DECIMAL(10,2) NOT NULL,
+    cost_price DECIMAL(10,2) NULL,
+    type       ENUM('labor','part','fee','other') NOT NULL DEFAULT 'other',
 
-    FOREIGN KEY (history_id) REFERENCES history_records(id) ON DELETE CASCADE
+    FOREIGN KEY (history_id) REFERENCES history_records(id) ON DELETE CASCADE,
+    FOREIGN KEY (catalog_id) REFERENCES parts_catalog(id)   ON DELETE SET NULL,
+
+    INDEX idx_history_service_items_catalog_id (catalog_id)
+);
+
+-- ======================
+-- PAYMENTS
+-- One row per paid history_record.
+-- On insert:
+--   1. Flip history_records.payment_status  → 'paid'
+--   2. Copy payment_method + payment_reference → history_records (receipt snapshot)
+--   3. Write a balance_ledger row (type='payment_in', direction='in')
+-- All three steps must run inside a single transaction in the application layer.
+-- ======================
+CREATE TABLE IF NOT EXISTS payments (
+    id         INT AUTO_INCREMENT PRIMARY KEY,
+    history_id INT NOT NULL,
+
+    amount_paid       DECIMAL(10,2) NOT NULL,
+    payment_method    ENUM('cash','mobile_money','bank_transfer','card','other') NOT NULL DEFAULT 'cash',
+    payment_reference VARCHAR(100) NULL,
+
+    recorded_by INT NULL,
+    paid_at     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    notes       TEXT NULL,
+
+    FOREIGN KEY (history_id)  REFERENCES history_records(id) ON DELETE CASCADE,
+    FOREIGN KEY (recorded_by) REFERENCES users(id)           ON DELETE SET NULL,
+
+    INDEX idx_payments_history_id  (history_id),
+    INDEX idx_payments_recorded_by (recorded_by),
+    INDEX idx_payments_paid_at     (paid_at)
+);
+
+-- ======================
+-- PAYROLL RECORDS
+-- Net pay = base_salary + commission_earnings - deductions.
+-- When status flips to 'paid', write a balance_ledger row
+-- (type='payroll', direction='out') in the application layer.
+-- ======================
+CREATE TABLE IF NOT EXISTS payroll_records (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+
+    target_type    ENUM('mechanic','staff_admin') NOT NULL,
+    mechanic_id    INT NULL,
+    staff_admin_id INT NULL,
+
+    employee_name  VARCHAR(100) NOT NULL,
+
+    period_start DATE NOT NULL,
+    period_end   DATE NOT NULL,
+
+    total_jobs          INT           NOT NULL DEFAULT 0,
+    gross_job_revenue   DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    base_salary         DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    commission_rate     DECIMAL(5,2)  NOT NULL DEFAULT 0.00,
+    commission_earnings DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    deductions          DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+    net_pay             DECIMAL(10,2) NOT NULL DEFAULT 0.00,
+
+    status ENUM('draft','approved','paid') NOT NULL DEFAULT 'draft',
+
+    payment_method    ENUM('cash','mobile_money','bank_transfer','other') NULL,
+    payment_reference VARCHAR(100) NULL,
+    deduction_notes   TEXT NULL,
+    notes             TEXT NULL,
+
+    created_by INT NULL,
+    paid_at    TIMESTAMP NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (mechanic_id)    REFERENCES mechanics(id) ON DELETE SET NULL,
+    FOREIGN KEY (staff_admin_id) REFERENCES users(id)     ON DELETE SET NULL,
+    FOREIGN KEY (created_by)     REFERENCES users(id)     ON DELETE SET NULL,
+
+    INDEX idx_payroll_target_type    (target_type),
+    INDEX idx_payroll_mechanic_id    (mechanic_id),
+    INDEX idx_payroll_staff_admin_id (staff_admin_id),
+    INDEX idx_payroll_period_start   (period_start),
+    INDEX idx_payroll_status         (status)
+);
+
+-- ======================
+-- EXPENSES
+-- Operational costs logged by super admin only.
+-- Two-step lifecycle:
+--   status='active' — expense recorded (liability known) but not yet paid.
+--                     Fully editable and deletable. No ledger entry yet.
+--   status='paid'   — expense marked paid. Immutable (no edits, no deletes).
+--                     Application layer must run inside a single transaction:
+--                       1. UPDATE expenses SET status='paid', paid_at=NOW(),
+--                                             payment_method=?, payment_reference=?
+--                       2. INSERT into balance_ledger
+--                            (type='expense', direction='out', amount=expenses.amount,
+--                             reference_id=expenses.id)
+-- vendor_name captures the supplier or company paid (e.g. "SomaliPower", "City Water").
+-- Nullable because petty cash or internal purchases may have no formal vendor.
+-- ======================
+CREATE TABLE IF NOT EXISTS expenses (
+    id           INT AUTO_INCREMENT PRIMARY KEY,
+
+    category     ENUM('electricity','water','cleaning','rent','supplies','other') NOT NULL,
+    vendor_name  VARCHAR(150) NULL,        -- company/supplier receiving the payment
+    amount       DECIMAL(10,2) NOT NULL,
+    expense_date DATE NOT NULL,
+    notes        TEXT NULL,
+
+    status            ENUM('active','paid') NOT NULL DEFAULT 'active',
+    payment_method    ENUM('cash','mobile_money','bank_transfer','other') NULL,
+    payment_reference VARCHAR(100) NULL,   -- e.g. mobile-money transaction ID
+    paid_at           TIMESTAMP NULL,      -- set when status flips to 'paid'
+
+    recorded_by  INT NULL,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+    FOREIGN KEY (recorded_by) REFERENCES users(id) ON DELETE SET NULL,
+
+    INDEX idx_expenses_category     (category),
+    INDEX idx_expenses_expense_date (expense_date),
+    INDEX idx_expenses_recorded_by  (recorded_by),
+    INDEX idx_expenses_status       (status)
 );
 
 -- ======================
@@ -409,16 +681,16 @@ INSERT INTO feedback_tags (label, category, is_positive, sort_order) VALUES
 -- ======================
 -- INDEXES (PERFORMANCE)
 -- ======================
-CREATE INDEX IF NOT EXISTS idx_requests_user_id     ON requests(user_id);
-CREATE INDEX IF NOT EXISTS idx_requests_walkin_id   ON requests(walkin_id);
-CREATE INDEX IF NOT EXISTS idx_requests_mechanic_id ON requests(mechanic_id);
-CREATE INDEX IF NOT EXISTS idx_services_request_id  ON services(request_id);
+CREATE INDEX IF NOT EXISTS idx_requests_user_id      ON requests(user_id);
+CREATE INDEX IF NOT EXISTS idx_requests_walkin_id    ON requests(walkin_id);
+CREATE INDEX IF NOT EXISTS idx_requests_mechanic_id  ON requests(mechanic_id);
+CREATE INDEX IF NOT EXISTS idx_requests_assigned_by  ON requests(assigned_by);
+CREATE INDEX IF NOT EXISTS idx_requests_completed_by ON requests(completed_by);
+CREATE INDEX IF NOT EXISTS idx_services_request_id   ON services(request_id);
 
 -- ======================
 -- SUPER ADMIN SETUP
 -- Run once after importing to promote the shop owner account.
--- This is the ONLY way to create a super admin — no UI exists for this.
--- The triggers above will prevent a second super admin from ever being set.
 --
 --   UPDATE users
 --   SET role = 'admin', is_superadmin = TRUE
@@ -426,81 +698,4 @@ CREATE INDEX IF NOT EXISTS idx_services_request_id  ON services(request_id);
 --
 -- To verify:
 --   SELECT id, full_name, email, role, is_superadmin, is_disabled FROM users;
--- ======================
-
--- ======================
--- EXISTING DB MIGRATION
--- If upgrading an existing install, run these instead of reimporting:
---
--- 1. Users table — super admin & account control flags:
---   ALTER TABLE users ADD COLUMN is_superadmin BOOLEAN NOT NULL DEFAULT FALSE;
---   ALTER TABLE users ADD COLUMN is_disabled   BOOLEAN NOT NULL DEFAULT FALSE;
---
--- 2. Users table — session tracking:
---   ALTER TABLE users ADD COLUMN last_login  TIMESTAMP NULL;
---   ALTER TABLE users ADD COLUMN last_logout TIMESTAMP NULL;
---
--- 3. Users table — cancel spam prevention:
---   ALTER TABLE users ADD COLUMN cancel_count_today   TINYINT  NOT NULL DEFAULT 0;
---   ALTER TABLE users ADD COLUMN cancel_date          DATE     NULL;
---   ALTER TABLE users ADD COLUMN cancel_blocked_until DATETIME NULL;
---
--- 4. Vehicle fields on requests:
---   ALTER TABLE requests
---     ADD COLUMN vehicle_make       VARCHAR(100) NULL AFTER walkin_id,
---     ADD COLUMN vehicle_make_other VARCHAR(100) NULL AFTER vehicle_make,
---     ADD COLUMN vehicle_model      VARCHAR(100) NULL AFTER vehicle_make_other,
---     ADD COLUMN vehicle_year       SMALLINT     NULL AFTER vehicle_model;
---
--- 5. Vehicle snapshot fields on history_records:
---   ALTER TABLE history_records
---     ADD COLUMN vehicle_make  VARCHAR(100) NULL AFTER mechanic_gender,
---     ADD COLUMN vehicle_model VARCHAR(100) NULL AFTER vehicle_make,
---     ADD COLUMN vehicle_year  SMALLINT     NULL AFTER vehicle_model;
---   CREATE INDEX idx_history_vehicle_make ON history_records(vehicle_make);
---
--- 6. Cancel feature — status enum expansion:
---   ALTER TABLE requests
---     MODIFY COLUMN status ENUM('pending','assigned','in_progress','completed','rejected','cancelled') DEFAULT 'pending';
---   ALTER TABLE history_records
---     MODIFY COLUMN status ENUM('completed','rejected','cancelled') NOT NULL;
---
--- 7. Walk-in customer vehicle fields:
---   ALTER TABLE walkin_customers
---     ADD COLUMN vehicle_make       VARCHAR(100) NULL AFTER gender,
---     ADD COLUMN vehicle_make_other VARCHAR(100) NULL AFTER vehicle_make,
---     ADD COLUMN vehicle_model      VARCHAR(100) NULL AFTER vehicle_make_other,
---     ADD COLUMN vehicle_year       SMALLINT     NULL AFTER vehicle_model;
---
--- 8. Super admin uniqueness triggers (run after step 1):
---
---   DROP TRIGGER IF EXISTS trg_one_superadmin_insert;
---   DELIMITER $$
---   CREATE TRIGGER trg_one_superadmin_insert
---   BEFORE INSERT ON users
---   FOR EACH ROW
---   BEGIN
---       IF NEW.is_superadmin = TRUE THEN
---           IF (SELECT COUNT(*) FROM users WHERE is_superadmin = TRUE) > 0 THEN
---               SIGNAL SQLSTATE '45000'
---                   SET MESSAGE_TEXT = 'Only one super admin is allowed per deployment.';
---           END IF;
---       END IF;
---   END$$
---   DELIMITER ;
---
---   DROP TRIGGER IF EXISTS trg_one_superadmin_update;
---   DELIMITER $$
---   CREATE TRIGGER trg_one_superadmin_update
---   BEFORE UPDATE ON users
---   FOR EACH ROW
---   BEGIN
---       IF NEW.is_superadmin = TRUE AND OLD.is_superadmin = FALSE THEN
---           IF (SELECT COUNT(*) FROM users WHERE is_superadmin = TRUE) > 0 THEN
---               SIGNAL SQLSTATE '45000'
---                   SET MESSAGE_TEXT = 'Only one super admin is allowed per deployment.';
---           END IF;
---       END IF;
---   END$$
---   DELIMITER ;
 -- ======================

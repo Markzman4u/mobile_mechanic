@@ -10,6 +10,7 @@ if (!isAdmin()) {
 }
 
 $pdo     = getPDO();
+$baseUrl = getBasePath();
 $message = '';
 $error   = '';
 
@@ -20,10 +21,15 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['hide_selected'])) {
         $placeholders = implode(',', array_fill(0, count($ids), '?'));
         $pdo->prepare("UPDATE history_records SET hidden_by_admin = TRUE WHERE id IN ($placeholders)")
             ->execute(array_values($ids));
-        $message = count($ids) . ' record(s) hidden successfully.';
+        header('Location: ' . $baseUrl . 'admin/history.php?msg=hidden');
+        exit;
     } else {
         $error = 'No records selected.';
     }
+}
+
+if (isset($_GET['msg']) && $_GET['msg'] === 'hidden') {
+    $message = 'Record(s) hidden successfully.';
 }
 
 // ── Load history records (active only) ───────────────────────────────────────
@@ -38,11 +44,12 @@ $records = $pdo->query(
             hr.completed_at,
             hr.hidden_by_admin,
             hr.walkin_id,
+            hr.payment_status,
             CASE WHEN hr.walkin_id IS NOT NULL THEN 1 ELSE 0 END AS is_walkin
      FROM history_records hr
      WHERE hr.hidden_by_admin = FALSE
      ORDER BY hr.completed_at DESC"
-)->fetchAll();
+)->fetchAll(PDO::FETCH_ASSOC);
 
 // ── Count per tab for badges ──────────────────────────────────────────────────
 $countAll       = count($records);
@@ -52,7 +59,7 @@ $countWalkin    = 0;
 foreach ($records as $rec) {
     if ($rec['status']    === 'completed') $countCompleted++;
     if ($rec['status']    === 'rejected')  $countRejected++;
-    if ($rec['is_walkin'] == 1)            $countWalkin++;
+    if ((int)$rec['is_walkin'] === 1)      $countWalkin++;
 }
 
 require_once __DIR__ . '/../includes/header.php';
@@ -155,15 +162,49 @@ require_once __DIR__ . '/../includes/sidebar.php';
             color: #555;
         }
         #selection-bar.visible { display: flex; }
-        #selected-count { font-weight: 700; color: var(--safety-orange, #ff6600); }
+        #selected-count { font-weight: 700; color: #ff6600; }
+
+        /* ── Table wrapper (prevents overflow) ─────────────────────────── */
+        .table-scroll {
+            width: 100%;
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        #history-table {
+            width: 100%;
+            min-width: 860px;
+            border-collapse: collapse;
+        }
+        #history-table th,
+        #history-table td {
+            white-space: nowrap;
+            vertical-align: middle;
+        }
+        /* Allow problem/customer columns to wrap a little */
+        #history-table td:nth-child(3),
+        #history-table td:nth-child(4) {
+            white-space: normal;
+            min-width: 110px;
+        }
 
         tbody tr { transition: background 0.1s; }
         tbody tr.selected-row { background: #fff3e8 !important; }
-        input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--safety-orange, #ff6600); }
+        input[type="checkbox"] { width: 16px; height: 16px; cursor: pointer; accent-color: #ff6600; }
 
         /* ── Status badges ─────────────────────────────────────────────── */
         .status-completed { background:#e8f7e9; color:#2f6627; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
         .status-rejected  { background:#fff4f4; color:#a94442; padding:3px 10px; border-radius:12px; font-size:0.8rem; font-weight:600; }
+
+        /* ── Payment status badges ─────────────────────────────────────── */
+        .pay-badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 12px;
+            font-size: 0.78rem;
+            font-weight: 600;
+        }
+        .pay-badge-paid   { background: #e8f7e9; color: #2f6627; }
+        .pay-badge-unpaid { background: #fff4e0; color: #a05800; }
 
         /* ── Walk-in badge ─────────────────────────────────────────────── */
         .badge-walkin {
@@ -179,13 +220,31 @@ require_once __DIR__ . '/../includes/sidebar.php';
             font-weight: 600;
         }
 
-        /* ── Empty state ───────────────────────────────────────────────── */
-        #no-filter-results {
-            display: none;
-            text-align: center;
-            color: var(--muted);
-            padding: 20px;
+        /* ── Action cell buttons ───────────────────────────────────────── */
+        .action-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            align-items: flex-start;
         }
+        .btn-sm {
+            padding: 4px 12px;
+            font-size: 0.8rem;
+            border-radius: 5px;
+            text-decoration: none;
+            display: inline-block;
+            text-align: center;
+            white-space: nowrap;
+            border: none;
+            cursor: pointer;
+            font-weight: 600;
+        }
+        .btn-invoice       { background: #ff6600; color: #fff; }
+        .btn-invoice:hover { background: #e05500; color: #fff; }
+        .btn-payment       { background: #2196f3; color: #fff; }
+        .btn-payment:hover { background: #1976d2; color: #fff; }
+        .btn-receipt       { background: #43a047; color: #fff; }
+        .btn-receipt:hover { background: #2e7d32; color: #fff; }
     </style>
 
     <!-- ── Filter Tabs ──────────────────────────────────────────────────── -->
@@ -226,59 +285,76 @@ require_once __DIR__ . '/../includes/sidebar.php';
                     onclick="clearSelection()">Deselect All</button>
         </div>
 
-        <!-- ── Table ────────────────────────────────────────────────────── -->
+        <!-- ── Table (wrapped for horizontal scroll) ────────────────────── -->
+        <div class="table-scroll">
         <table id="history-table">
             <thead>
                 <tr>
                     <th style="width:36px;">
                         <input type="checkbox" id="check-all" title="Select all">
                     </th>
-                    <th>Request ID</th>
+                    <th>Req ID</th>
                     <th>Customer</th>
                     <th>Problem</th>
                     <th>Mechanic</th>
                     <th>Status</th>
+                    <th>Payment</th>
                     <th>Completed</th>
                     <th>Total</th>
-                    <th>Invoice</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
                 <?php if (empty($records)): ?>
                     <tr id="empty-row">
-                        <td colspan="9" style="text-align:center;color:var(--muted);padding:20px;">
+                        <td colspan="10" style="text-align:center;color:var(--muted);padding:20px;">
                             No history records found.
                         </td>
                     </tr>
                 <?php else: ?>
-                    <?php foreach ($records as $rec): ?>
-                        <tr data-search="<?php echo strtolower(
-                                e($rec['customer_name']) . ' ' .
-                                e($rec['mechanic_name']) . ' ' .
-                                e($rec['problem_type'])  . ' ' .
-                                $rec['request_id']
-                            ); ?>"
+                    <?php foreach ($records as $rec):
+                        $isPaid      = ($rec['payment_status'] === 'paid');
+                        $isCompleted = ($rec['status'] === 'completed');
+                        $isWalkin    = (int)$rec['is_walkin'] === 1;
+
+                        $searchStr = strtolower(
+                            strip_tags($rec['customer_name']) . ' ' .
+                            strip_tags($rec['mechanic_name'] ?? '') . ' ' .
+                            strip_tags($rec['problem_type']  ?? '') . ' ' .
+                            $rec['request_id']
+                        );
+                    ?>
+                        <tr data-search="<?php echo htmlspecialchars($searchStr, ENT_QUOTES, 'UTF-8'); ?>"
                             data-status="<?php echo e($rec['status']); ?>"
-                            data-walkin="<?php echo $rec['is_walkin'] ? '1' : '0'; ?>">
+                            data-walkin="<?php echo $isWalkin ? '1' : '0'; ?>">
                             <td>
                                 <input type="checkbox" name="selected_ids[]"
-                                       value="<?php echo $rec['id']; ?>"
+                                       value="<?php echo (int)$rec['id']; ?>"
                                        class="row-check"
                                        onclick="updateSelection()">
                             </td>
-                            <td><?php echo e($rec['request_id']); ?></td>
+                            <td><?php echo (int)$rec['request_id']; ?></td>
                             <td>
                                 <?php echo e($rec['customer_name']); ?>
-                                <?php if ($rec['is_walkin']): ?>
+                                <?php if ($isWalkin): ?>
                                     <span class="badge-walkin">Walk-in</span>
                                 <?php endif; ?>
                             </td>
-                            <td><?php echo e($rec['problem_type']); ?></td>
+                            <td><?php echo e($rec['problem_type'] ?? '—'); ?></td>
                             <td><?php echo e($rec['mechanic_name'] ?? '—'); ?></td>
                             <td>
-                                <span class="status-<?php echo $rec['status']; ?>">
+                                <span class="status-<?php echo e($rec['status']); ?>">
                                     <?php echo ucfirst(e($rec['status'])); ?>
                                 </span>
+                            </td>
+                            <td>
+                                <?php if ($isCompleted): ?>
+                                    <span class="pay-badge <?php echo $isPaid ? 'pay-badge-paid' : 'pay-badge-unpaid'; ?>">
+                                        <?php echo $isPaid ? '✓ Paid' : '⏳ Unpaid'; ?>
+                                    </span>
+                                <?php else: ?>
+                                    <span style="color:var(--muted);font-size:0.82rem;">—</span>
+                                <?php endif; ?>
                             </td>
                             <td>
                                 <?php echo $rec['completed_at']
@@ -286,46 +362,51 @@ require_once __DIR__ . '/../includes/sidebar.php';
                                     : '—'; ?>
                             </td>
                             <td>
-                                <?php echo $rec['total_amount'] > 0
+                                <?php echo ($rec['total_amount'] > 0)
                                     ? '$' . number_format((float)$rec['total_amount'], 2)
                                     : '—'; ?>
                             </td>
                             <td>
-                                <?php if ($rec['status'] === 'completed'): ?>
-                                    <a href="<?php echo getBasePath(); ?>admin/invoice.php?history_id=<?php echo $rec['id']; ?>"
-                                       class="btn btn-primary"
-                                       style="padding:4px 12px;font-size:0.82rem;">
-                                        View Invoice
-                                    </a>
+                                <?php if ($isCompleted): ?>
+                                    <div class="action-cell">
+                                        <a href="<?php echo $baseUrl; ?>admin/invoice.php?history_id=<?php echo (int)$rec['id']; ?>"
+                                           class="btn-sm btn-invoice">📄 Invoice</a>
+
+                                        <?php if ($isPaid): ?>
+                                            <a href="<?php echo $baseUrl; ?>admin/view_receipt.php?history_id=<?php echo (int)$rec['id']; ?>"
+                                               class="btn-sm btn-receipt">🧾 Receipt</a>
+                                        <?php else: ?>
+                                            <a href="<?php echo $baseUrl; ?>admin/payments.php?history_id=<?php echo (int)$rec['id']; ?>"
+                                               class="btn-sm btn-payment">💳 Payment</a>
+                                        <?php endif; ?>
+                                    </div>
                                 <?php else: ?>
                                     <span style="color:var(--muted);font-size:0.82rem;">N/A</span>
                                 <?php endif; ?>
                             </td>
                         </tr>
                     <?php endforeach; ?>
-                    <!-- Empty state shown when filters/search yield no results -->
                     <tr id="no-filter-results" style="display:none;">
-                        <td colspan="9" style="text-align:center;color:var(--muted);padding:20px;">
+                        <td colspan="10" style="text-align:center;color:var(--muted);padding:20px;">
                             No records match the selected filter.
                         </td>
                     </tr>
                 <?php endif; ?>
             </tbody>
         </table>
+        </div><!-- /.table-scroll -->
 
     </form>
 </div>
 </main>
 
 <script>
-    // ── State ──────────────────────────────────────────────────────────────
     let activeFilter = 'all';
     let searchQuery  = '';
 
-    // ── Apply both filter + search together ───────────────────────────────
     function applyFilters() {
-        const rows    = document.querySelectorAll('#history-table tbody tr[data-status]');
-        let   visible = 0;
+        const rows = document.querySelectorAll('#history-table tbody tr[data-status]');
+        let visible = 0;
 
         rows.forEach(row => {
             const matchesFilter =
@@ -336,8 +417,8 @@ require_once __DIR__ . '/../includes/sidebar.php';
                 true;
 
             const matchesSearch = !searchQuery || row.dataset.search.includes(searchQuery);
-
             const show = matchesFilter && matchesSearch;
+
             row.style.display = show ? '' : 'none';
             if (!show) {
                 const cb = row.querySelector('.row-check');
@@ -346,14 +427,12 @@ require_once __DIR__ . '/../includes/sidebar.php';
             if (show) visible++;
         });
 
-        // Show "no results" placeholder row
         const emptyRow = document.getElementById('no-filter-results');
         if (emptyRow) emptyRow.style.display = visible === 0 ? 'table-row' : 'none';
 
         updateSelection();
     }
 
-    // ── Filter tab clicks ─────────────────────────────────────────────────
     document.querySelectorAll('.filter-tab').forEach(tab => {
         tab.addEventListener('click', function () {
             document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
@@ -363,15 +442,16 @@ require_once __DIR__ . '/../includes/sidebar.php';
         });
     });
 
-    // ── Search input ──────────────────────────────────────────────────────
     document.getElementById('search-input').addEventListener('input', function () {
         searchQuery = this.value.toLowerCase().trim();
         applyFilters();
     });
 
-    // ── Select all (visible rows only) ───────────────────────────────────
     document.getElementById('check-all').addEventListener('change', function () {
-        const boxes = document.querySelectorAll('#history-table tbody tr[data-status]:not([style*="display:none"]) .row-check');
+        const boxes = document.querySelectorAll(
+            '#history-table tbody tr[data-status]:not([style*="display: none"]) .row-check,' +
+            '#history-table tbody tr[data-status]:not([style*="display:none"]) .row-check'
+        );
         boxes.forEach(cb => {
             cb.checked = this.checked;
             cb.closest('tr').classList.toggle('selected-row', this.checked);
@@ -381,9 +461,9 @@ require_once __DIR__ . '/../includes/sidebar.php';
 
     function updateSelection() {
         const checked = document.querySelectorAll('.row-check:checked');
+        const count   = checked.length;
         const bar     = document.getElementById('selection-bar');
         const btnAct  = document.getElementById('btn-action');
-        const count   = checked.length;
 
         document.getElementById('selected-count').textContent = count;
         bar.classList.toggle('visible', count > 0);
@@ -393,9 +473,13 @@ require_once __DIR__ . '/../includes/sidebar.php';
             cb.closest('tr').classList.toggle('selected-row', cb.checked);
         });
 
-        const all = document.querySelectorAll('#history-table tbody tr[data-status]:not([style*="display:none"]) .row-check');
-        document.getElementById('check-all').indeterminate = count > 0 && count < all.length;
-        document.getElementById('check-all').checked = all.length > 0 && count === all.length;
+        const allVisible = document.querySelectorAll(
+            '#history-table tbody tr[data-status]:not([style*="display: none"]) .row-check,' +
+            '#history-table tbody tr[data-status]:not([style*="display:none"]) .row-check'
+        );
+        const chkAll = document.getElementById('check-all');
+        chkAll.indeterminate = count > 0 && count < allVisible.length;
+        chkAll.checked       = allVisible.length > 0 && count === allVisible.length;
     }
 
     function clearSelection() {

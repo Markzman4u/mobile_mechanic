@@ -148,63 +148,14 @@ $mapLocations = runQuery($pdo,
     $params
 )->fetchAll();
 
-// ── 8. Revenue by month (completed jobs only) ────────────────────────────────
-$revenueMonthly = runQuery($pdo,
-    "SELECT
-        DATE_FORMAT(hr.completed_at, '%Y-%m') AS rev_month,
-        DATE_FORMAT(hr.completed_at, '%b %Y') AS rev_label,
-        SUM(hr.total_amount)                   AS total_revenue,
-        COUNT(*)                               AS job_count,
-        ROUND(AVG(hr.total_amount), 2)         AS avg_per_job
-     FROM history_records hr
-     $where AND hr.status = 'completed' AND hr.total_amount > 0
-     GROUP BY DATE_FORMAT(hr.completed_at, '%Y-%m')
-     ORDER BY rev_month ASC",
-    $params
-)->fetchAll();
-
-// ── 9. Revenue by problem type (completed jobs only) ─────────────────────────
-$revenueProblem = runQuery($pdo,
-    "SELECT
-        COALESCE(hr.problem_type, 'Unknown') AS problem_type,
-        SUM(hr.total_amount)                  AS total_revenue,
-        COUNT(*)                              AS job_count,
-        ROUND(AVG(hr.total_amount), 2)        AS avg_per_job
-     FROM history_records hr
-     $where AND hr.status = 'completed' AND hr.total_amount > 0
-     GROUP BY hr.problem_type
-     ORDER BY total_revenue DESC",
-    $params
-)->fetchAll();
-
-// ── Revenue summary stats ─────────────────────────────────────────────────────
-$revenueSummary = runQuery($pdo,
-    "SELECT
-        SUM(hr.total_amount)           AS grand_total,
-        ROUND(AVG(hr.total_amount), 2) AS avg_per_job,
-        COUNT(*)                       AS paid_jobs
-     FROM history_records hr
-     $where AND hr.status = 'completed' AND hr.total_amount > 0",
-    $params
-)->fetch();
-
-$bestMonth = null;
-if (!empty($revenueMonthly)) {
-    usort($revenueMonthly, fn($a, $b) => $b['total_revenue'] <=> $a['total_revenue']);
-    $bestMonth = $revenueMonthly[0];
-    usort($revenueMonthly, fn($a, $b) => strcmp($a['rev_month'], $b['rev_month']));
-}
-
 // ── JSON encode for JS ────────────────────────────────────────────────────────
-$jsOverview       = json_encode($overview,        JSON_NUMERIC_CHECK);
-$jsMechPerf       = json_encode($mechanicPerf,    JSON_NUMERIC_CHECK);
-$jsRatings        = json_encode($ratings,         JSON_NUMERIC_CHECK);
-$jsTopTags        = json_encode($topTags);
-$jsDuration       = json_encode($durationData,    JSON_NUMERIC_CHECK);
-$jsVolume         = json_encode(array_values($volumeByHour));
-$jsMapLocs        = json_encode($mapLocations,    JSON_NUMERIC_CHECK);
-$jsRevenueMonthly = json_encode($revenueMonthly,  JSON_NUMERIC_CHECK);
-$jsRevenueProblem = json_encode($revenueProblem,  JSON_NUMERIC_CHECK);
+$jsOverview = json_encode($overview,     JSON_NUMERIC_CHECK);
+$jsMechPerf = json_encode($mechanicPerf, JSON_NUMERIC_CHECK);
+$jsRatings  = json_encode($ratings,      JSON_NUMERIC_CHECK);
+$jsTopTags  = json_encode($topTags);
+$jsDuration = json_encode($durationData, JSON_NUMERIC_CHECK);
+$jsVolume   = json_encode(array_values($volumeByHour));
+$jsMapLocs  = json_encode($mapLocations, JSON_NUMERIC_CHECK);
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/navbar.php';
@@ -355,7 +306,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
             <option value="overview">📊 Overview</option>
             <option value="mechanic">🔧 Mechanic Performance</option>
             <option value="feedback">⭐ Feedback &amp; Ratings</option>
-            <option value="revenue">💰 Revenue</option>
             <option value="duration">⏱ Job Duration</option>
             <option value="volume">📈 Request Volume</option>
             <option value="map">🗺 Customer Map</option>
@@ -541,105 +491,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
         <?php endif; ?>
     </div>
 
-    <!-- ════════════════ SECTION: REVENUE ════════════════ -->
-    <div class="report-section" id="tab-revenue" style="display:none;">
-        <?php if (empty($revenueMonthly) && empty($revenueProblem)): ?>
-            <div class="empty-state">
-                <div class="ei">💰</div>
-                <p>No revenue data available for the selected filters.</p>
-            </div>
-        <?php else: ?>
-
-            <div class="stat-grid" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:28px;">
-                <div class="stat-card">
-                    <div class="stat-value">
-                        $<?php echo number_format((float)($revenueSummary['grand_total'] ?? 0), 2); ?>
-                    </div>
-                    <div class="stat-label">Total Revenue</div>
-                    <div class="stat-sub">completed jobs only</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value">
-                        $<?php echo number_format((float)($revenueSummary['avg_per_job'] ?? 0), 2); ?>
-                    </div>
-                    <div class="stat-label">Avg per Job</div>
-                </div>
-                <div class="stat-card">
-                    <div class="stat-value"><?php echo (int)($revenueSummary['paid_jobs'] ?? 0); ?></div>
-                    <div class="stat-label">Paid Jobs</div>
-                </div>
-                <?php if ($bestMonth): ?>
-                <div class="stat-card">
-                    <div class="stat-value" style="font-size:1.4rem;">
-                        <?php echo e($bestMonth['rev_label']); ?>
-                    </div>
-                    <div class="stat-label">Best Month</div>
-                    <div class="stat-sub">$<?php echo number_format((float)$bestMonth['total_revenue'], 2); ?></div>
-                </div>
-                <?php endif; ?>
-            </div>
-
-            <?php if (!empty($revenueMonthly)): ?>
-                <h3 class="sec-title">Revenue by Month</h3>
-                <p class="sec-sub">Total billed from completed jobs &middot; best month highlighted</p>
-                <div class="chart-wrap" style="height:300px;">
-                    <canvas id="chart-revenue-monthly"></canvas>
-                </div>
-
-                <table style="margin-top:8px;margin-bottom:28px;">
-                    <thead>
-                        <tr>
-                            <th>Month</th>
-                            <th style="text-align:center;">Completed Jobs</th>
-                            <th style="text-align:right;">Total Revenue</th>
-                            <th style="text-align:right;">Avg per Job</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($revenueMonthly as $row): ?>
-                            <tr>
-                                <td><?php echo e($row['rev_label']); ?></td>
-                                <td style="text-align:center;"><?php echo (int)$row['job_count']; ?></td>
-                                <td style="text-align:right;">$<?php echo number_format((float)$row['total_revenue'], 2); ?></td>
-                                <td style="text-align:right;">$<?php echo number_format((float)$row['avg_per_job'], 2); ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            <?php endif; ?>
-
-            <?php if (!empty($revenueProblem)): ?>
-                <h3 class="sec-title">Revenue by Problem Type</h3>
-                <p class="sec-sub">Which service types generate the most revenue</p>
-                <div class="chart-wrap" style="height:<?php echo max(220, count($revenueProblem) * 52); ?>px;">
-                    <canvas id="chart-revenue-problem"></canvas>
-                </div>
-
-                <table style="margin-top:8px;">
-                    <thead>
-                        <tr>
-                            <th>Problem Type</th>
-                            <th style="text-align:center;">Jobs</th>
-                            <th style="text-align:right;">Total Revenue</th>
-                            <th style="text-align:right;">Avg per Job</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        <?php foreach ($revenueProblem as $row): ?>
-                            <tr>
-                                <td><?php echo e($row['problem_type']); ?></td>
-                                <td style="text-align:center;"><?php echo (int)$row['job_count']; ?></td>
-                                <td style="text-align:right;">$<?php echo number_format((float)$row['total_revenue'], 2); ?></td>
-                                <td style="text-align:right;">$<?php echo number_format((float)$row['avg_per_job'], 2); ?></td>
-                            </tr>
-                        <?php endforeach; ?>
-                    </tbody>
-                </table>
-            <?php endif; ?>
-
-        <?php endif; ?>
-    </div>
-
     <!-- ════════════════ SECTION: JOB DURATION ════════════════ -->
     <div class="report-section" id="tab-duration" style="display:none;">
         <?php if (empty($durationData)): ?>
@@ -724,15 +575,13 @@ require_once __DIR__ . '/../includes/sidebar.php';
 </main>
 
 <script>
-const overview       = <?php echo $jsOverview; ?>;
-const mechPerf       = <?php echo $jsMechPerf; ?>;
-const ratings        = <?php echo $jsRatings; ?>;
-const topTags        = <?php echo $jsTopTags; ?>;
-const duration       = <?php echo $jsDuration; ?>;
-const volume         = <?php echo $jsVolume; ?>;
-const mapLocs        = <?php echo $jsMapLocs; ?>;
-const revenueMonthly = <?php echo $jsRevenueMonthly; ?>;
-const revenueProblem = <?php echo $jsRevenueProblem; ?>;
+const overview = <?php echo $jsOverview; ?>;
+const mechPerf = <?php echo $jsMechPerf; ?>;
+const ratings  = <?php echo $jsRatings; ?>;
+const topTags  = <?php echo $jsTopTags; ?>;
+const duration = <?php echo $jsDuration; ?>;
+const volume   = <?php echo $jsVolume; ?>;
+const mapLocs  = <?php echo $jsMapLocs; ?>;
 
 // ── Section switching via dropdown ───────────────────────────────────────────
 const inited = {};
@@ -754,7 +603,6 @@ function initSection(name) {
         overview: initOverview,
         mechanic: initMechanic,
         feedback: initFeedback,
-        revenue:  initRevenue,
         duration: initDuration,
         volume:   initVolume,
         map:      initMap,
@@ -862,89 +710,6 @@ function initFeedback() {
             }
         }
     });
-}
-
-function initRevenue() {
-    const elMonthly = document.getElementById('chart-revenue-monthly');
-    if (elMonthly && revenueMonthly.length) {
-        const maxRev = Math.max(...revenueMonthly.map(r => parseFloat(r.total_revenue) || 0));
-        new Chart(elMonthly, {
-            type: 'bar',
-            data: {
-                labels: revenueMonthly.map(r => r.rev_label),
-                datasets: [{
-                    label: 'Revenue',
-                    data: revenueMonthly.map(r => parseFloat(r.total_revenue) || 0),
-                    backgroundColor: revenueMonthly.map(r =>
-                        (parseFloat(r.total_revenue) || 0) === maxRev && maxRev > 0
-                            ? C_ORANGE : C_ORANGE_DIM
-                    ),
-                    borderRadius: 6,
-                    borderSkipped: false,
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: { ticks: { font: FONT, callback: v => '$' + Number(v).toLocaleString() } },
-                    x: { ticks: { font: { size: 11 } } }
-                },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            label: ctx => '  $' + Number(ctx.parsed.y).toFixed(2),
-                            afterLabel: ctx => {
-                                const r = revenueMonthly[ctx.dataIndex];
-                                return ['Jobs: ' + r.job_count, 'Avg: $' + Number(r.avg_per_job).toFixed(2)];
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
-
-    const elProblem = document.getElementById('chart-revenue-problem');
-    if (elProblem && revenueProblem.length) {
-        new Chart(elProblem, {
-            type: 'bar',
-            data: {
-                labels: revenueProblem.map(r => r.problem_type),
-                datasets: [{
-                    label: 'Revenue',
-                    data: revenueProblem.map(r => parseFloat(r.total_revenue) || 0),
-                    backgroundColor: C_ORANGE_DIM,
-                    borderColor: C_ORANGE,
-                    borderWidth: 1,
-                    borderRadius: 5,
-                    borderSkipped: false,
-                }]
-            },
-            options: {
-                indexAxis: 'y',
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    x: { ticks: { font: FONT, callback: v => '$' + Number(v).toLocaleString() } },
-                    y: { ticks: { font: FONT } }
-                },
-                plugins: {
-                    legend: { display: false },
-                    tooltip: {
-                        callbacks: {
-                            label: ctx => '  $' + Number(ctx.parsed.x).toFixed(2),
-                            afterLabel: ctx => {
-                                const r = revenueProblem[ctx.dataIndex];
-                                return ['Jobs: ' + r.job_count, 'Avg: $' + Number(r.avg_per_job).toFixed(2)];
-                            }
-                        }
-                    }
-                }
-            }
-        });
-    }
 }
 
 function initDuration() {
@@ -1055,7 +820,8 @@ function initMap() {
 
 // ── Boot: restore last active section ────────────────────────────────────────
 const savedTab = sessionStorage.getItem('reports_tab') || 'overview';
-showTab(savedTab);
+// Guard: if saved tab was 'revenue', fall back to overview
+showTab(['overview','mechanic','feedback','duration','volume','map'].includes(savedTab) ? savedTab : 'overview');
 </script>
 
 <?php require_once __DIR__ . '/../includes/footer.php'; ?>

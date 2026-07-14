@@ -1,68 +1,251 @@
-/* Design theme: Charcoal / Dark Gray, Safety Orange, White / Light Gray */
-:root{
-	--charcoal:#2b2b2b;
-	--dark-gray:#4a4a4a;
-	--safety-orange:#ff6600;
-	--white:#ffffff;
-	--light-gray:#f5f6f7;
-	--muted:#9aa0a6;
+/* ============================================================
+   Design theme: Charcoal / Dark Gray · Safety Orange · White / Light Gray
+   ============================================================ */
+:root {
+    --charcoal:       #2b2b2b;
+    --dark-gray:      #4a4a4a;
+    --safety-orange:  #ff6600;
+    --white:          #ffffff;
+    --light-gray:     #f5f6f7;
+    --muted:          #9aa0a6;
 }
 
-html,body{height:100%;}
-body{
-	font-family: Arial, Helvetica, sans-serif;
-	margin:0;padding:0;
-	background:var(--light-gray);
-	color:var(--charcoal);
+html, body { height: 100%; }
+body {
+    font-family: Arial, Helvetica, sans-serif;
+    margin: 0; padding: 0;
+    background: var(--light-gray);
+    color: var(--charcoal);
 }
 
-header{background:var(--charcoal);color:var(--white);padding:12px 24px;display:flex;align-items:center;justify-content:space-between}
-header h1{margin:0;font-size:1.4rem}
+/* ── Header ── */
+header {
+    background: var(--charcoal);
+    color: var(--white);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+header h1 { margin: 0; font-size: 1.4rem; }
 
-nav{display:flex;align-items:center}
-nav ul{list-style:none;padding:0;margin:0;display:flex;gap:18px;align-items:center}
-nav a{color:var(--white);text-decoration:none;padding:6px 8px;border-radius:4px}
-nav a:hover{background:rgba(255,102,0,0.08);color:var(--safety-orange)}
+/* ── Nav ── */
+nav { display: flex; align-items: center; }
+nav ul { list-style: none; padding: 0; margin: 0; display: flex; gap: 18px; align-items: center; }
+nav a  { color: var(--white); text-decoration: none; padding: 6px 8px; border-radius: 4px; }
+nav a:hover { background: rgba(255,102,0,.08); color: var(--safety-orange); }
 
-/* Page layout */
-main{padding:24px;max-width:1100px;margin:24px auto;background:var(--white);box-shadow:0 6px 18px rgba(43,43,43,0.06);border-radius:8px}
-.page-layout{display:grid;grid-template-columns:260px minmax(0,1fr);gap:24px;max-width:1400px;margin:24px auto;padding:0 24px}
-.page-layout aside{background:var(--dark-gray);color:var(--white);padding:16px;border-radius:8px;margin:16px 0;position:sticky;top:24px;align-self:start}
-.sidebar-nav h2{margin-top:0;margin-bottom:16px;font-size:1.1rem;text-transform:uppercase;letter-spacing:.05em;color:var(--white);border-bottom:1px solid rgba(255,255,255,.12);padding-bottom:8px}
-.sidebar-nav ul{list-style:none;padding:0;margin:0}
-.sidebar-nav li{margin-bottom:10px}
-.sidebar-nav li a{display:block;color:var(--white);text-decoration:none;padding:10px 14px;border-radius:8px;transition:background .2s,color .2s}
-.sidebar-nav li a:hover{background:rgba(255,255,255,.08);color:#fff}
-.sidebar-nav li.active a{background:var(--safety-orange);color:var(--dark-gray);font-weight:700}
-.page-layout main{margin:0;max-width:none}
-@media(max-width:900px){.page-layout{grid-template-columns:1fr;padding:0 16px}.page-layout aside{position:static;top:auto}}
+/* ── Page layout ── */
+main {
+    padding: 24px;
+    max-width: 1100px;
+    margin: 24px auto;
+    background: var(--white);
+    box-shadow: 0 6px 18px rgba(43,43,43,.06);
+    border-radius: 8px;
+}
 
-/* Cards and panels */
-.card{background:var(--white);border:1px solid #eee;padding:16px;border-radius:8px;box-shadow:0 2px 6px rgba(43,43,43,0.03)}
+.page-layout {
+    display: grid;
+    grid-template-columns: 260px minmax(0,1fr);
+    gap: 24px;
+    max-width: 1400px;
+    margin: 24px auto;
+    padding: 0 24px;
+}
+.page-layout aside {
+    background: var(--dark-gray);
+    color: var(--white);
+    padding: 16px;
+    border-radius: 8px;
+    margin: 16px 0;
+    position: sticky;
+    top: 24px;
+    align-self: start;
+}
+.sidebar-nav h2 {
+    margin-top: 0;
+    margin-bottom: 16px;
+    font-size: 1.1rem;
+    text-transform: uppercase;
+    letter-spacing: .05em;
+    color: var(--white);
+    border-bottom: 1px solid rgba(255,255,255,.12);
+    padding-bottom: 8px;
+}
+.sidebar-nav ul  { list-style: none; padding: 0; margin: 0; }
+.sidebar-nav li  { margin-bottom: 10px; }
+.sidebar-nav li a {
+    display: block;
+    color: var(--white);
+    text-decoration: none;
+    padding: 10px 14px;
+    border-radius: 8px;
+    transition: background .2s, color .2s;
+}
+.sidebar-nav li a:hover           { background: rgba(255,255,255,.08); color: #fff; }
+.sidebar-nav li.active a          { background: var(--safety-orange); color: var(--dark-gray); font-weight: 700; }
+.page-layout main                 { margin: 0; max-width: none; }
 
-/* Buttons */
-.btn{display:inline-block;padding:8px 14px;border-radius:6px;border:none;cursor:pointer;font-weight:600}
-.btn-primary{background:var(--safety-orange);color:var(--white)}
-.btn-outline{background:transparent;border:1px solid var(--dark-gray);color:var(--dark-gray)}
+@media (max-width: 900px) {
+    .page-layout { grid-template-columns: 1fr; padding: 0 16px; }
+    .page-layout aside { position: static; top: auto; }
+}
 
-/* Forms */
-input[type="text"],input[type="email"],input[type="password"],select,textarea{width:100%;padding:8px;border:1px solid #e0e0e0;border-radius:6px;margin-top:6px;margin-bottom:12px}
-label{display:block;font-weight:600;color:var(--charcoal)}
+/* ── Cards ── */
+.card {
+    background: var(--white);
+    border: 1px solid #eee;
+    padding: 16px;
+    border-radius: 8px;
+    box-shadow: 0 2px 6px rgba(43,43,43,.03);
+}
 
-/* Tables */
-table{width:100%;border-collapse:collapse;background:var(--white)}
-th,td{padding:10px;border-bottom:1px solid #f0f0f0;text-align:left}
-th{background:var(--light-gray);font-weight:700}
+/* ── Buttons ── */
+.btn {
+    display: inline-block;
+    padding: 8px 14px;
+    border-radius: 6px;
+    border: none;
+    cursor: pointer;
+    font-weight: 600;
+    line-height: 1.4;        /* prevents height collapse on inline-block */
+    text-decoration: none;
+    vertical-align: middle;
+}
+.btn-primary { background: var(--safety-orange); color: var(--white); }
+.btn-outline { background: transparent; border: 1px solid var(--dark-gray); color: var(--dark-gray); }
 
-/* Footer */
-footer{background:var(--dark-gray);color:var(--light-gray);padding:18px;text-align:center;border-top:4px solid var(--charcoal);margin-top:24px;border-radius:0}
+/* ── Forms ────────────────────────────────────────────────────────────────────
+   Base rule: reset margin so inputs can be placed inside flex rows (filters,
+   inline forms) without causing alignment issues.  Vertical spacing is added
+   by the LABEL or a wrapping .form-group/.form-row where it is actually needed.
+── */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="number"],
+input[type="date"],
+input[type="search"],
+select,
+textarea {
+    width: 100%;
+    box-sizing: border-box;   /* width:100% no longer overflows its container */
+    padding: 8px;
+    border: 1px solid #e0e0e0;
+    border-radius: 6px;
+    font-size: .9rem;
+    /* ── KEY FIX: no global margin here.
+       Margins are controlled by wrapping .form-group / label context below.
+       This prevents flex filter rows from breaking alignment. ── */
+    margin: 0;
+}
 
-/* Status labels */
-.status{display:inline-block;padding:6px 8px;border-radius:999px;font-weight:700;font-size:0.85rem}
-.status-pending{background:#fff6eb;color:#b35b00}
-.status-assigned{background:#fff3f0;color:var(--safety-orange)}
-.status-in_progress{background:#eef7ff;color:#0b74de}
-.status-completed{background:#eefbe7;color:#2e7d32}
+input[type="text"]:focus,
+input[type="email"]:focus,
+input[type="password"]:focus,
+input[type="number"]:focus,
+input[type="date"]:focus,
+input[type="search"]:focus,
+select:focus,
+textarea:focus {
+    outline: none;
+    border-color: var(--safety-orange);
+    box-shadow: 0 0 0 2px rgba(255,102,0,.12);
+}
 
-/* Utility */
-.muted{color:var(--muted)}
+label {
+    display: block;
+    font-weight: 600;
+    color: var(--charcoal);
+    /* No forced margin here either; let form-group handle spacing. */
+}
+
+/* Standard form group — wraps label + input and owns the vertical gap */
+.form-group,
+.form-row {
+    margin-bottom: 14px;
+}
+.form-group label,
+.form-row   label {
+    margin-bottom: 5px;
+}
+
+/* ── Tables ────────────────────────────────────────────────────────────────────
+   – white-space:nowrap on td prevents date / number columns from wrapping.
+   – min-width on date/time columns keeps them readable.
+   – Add class="col-date" to any <th>/<td> containing a date to ensure it never
+     wraps regardless of table width.
+── */
+table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--white);
+}
+th, td {
+    padding: 10px;
+    border-bottom: 1px solid #f0f0f0;
+    text-align: left;
+    /* white-space defaults to normal so long text wraps by default;
+       use .col-nowrap / .col-date helpers below to opt specific columns in. */
+}
+th {
+    background: var(--light-gray);
+    font-weight: 700;
+    white-space: nowrap;    /* header labels never wrap */
+}
+
+/* Column helpers — apply to <th> AND corresponding <td> */
+.col-nowrap,
+.col-date,
+.col-time,
+.col-datetime,
+.col-num,
+.col-action {
+    white-space: nowrap;
+}
+.col-date,
+.col-datetime { min-width: 110px; }
+.col-time     { min-width:  80px; }
+.col-num      { text-align: right; }
+.col-action   { text-align: center; min-width: 80px; }
+
+/* Inputs inside table cells should NOT stretch to full cell width by default */
+td input,
+td select {
+    width: auto;
+    margin: 0;
+}
+
+/* ── Footer ── */
+footer {
+    background: var(--dark-gray);
+    color: var(--light-gray);
+    padding: 18px;
+    text-align: center;
+    border-top: 4px solid var(--charcoal);
+    margin-top: 24px;
+    border-radius: 0;
+}
+
+/* ── Status badges ── */
+.status {
+    display: inline-block;
+    padding: 6px 8px;
+    border-radius: 999px;
+    font-weight: 700;
+    font-size: .85rem;
+    white-space: nowrap;
+}
+.status-pending     { background: #fff6eb; color: #b35b00; }
+.status-assigned    { background: #fff3f0; color: var(--safety-orange); }
+.status-in_progress { background: #eef7ff; color: #0b74de; }
+.status-completed   { background: #eefbe7; color: #2e7d32; }
+.status-rejected    { background: #fce4ec; color: #c62828; }
+.status-cancelled   { background: #f5f5f5; color: #757575; }
+
+/* ── Utility ── */
+.muted          { color: var(--muted); }
+.text-right     { text-align: right; }
+.text-center    { text-align: center; }
+.text-nowrap    { white-space: nowrap; }

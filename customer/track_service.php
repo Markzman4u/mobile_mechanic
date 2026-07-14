@@ -47,15 +47,19 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['cancel_request_id'])
         $flash     = 'This request cannot be cancelled — it may have already been assigned or processed.';
         $flashType = 'error';
     } else {
-        // ── Calculate new cancel count & block ──────────────────────────
+        // ── Calculate new cancel count & escalating block ───────────────
         // If it's a new day, start fresh regardless of stored values
         $newCount = ($isNewDay ? 0 : $cancelCount) + 1;
 
-        // From the 2nd cancel onwards, every cancel triggers a fresh 5-min block.
-        // The block always starts from NOW() so each cancel "restarts" the timer.
-        $newBlockedUntil = ($newCount >= 2)
-            ? date('Y-m-d H:i:s', strtotime('+5 minutes'))
-            : null;
+        // Escalating block: block starts from the 2nd cancellation.
+        // Duration = (newCount - 1) * 5 minutes.
+        // e.g. 2nd cancel = 5 min, 3rd = 10 min, 4th = 15 min, etc.
+        $newBlockedUntil = null;
+        $blockMinutes    = 0;
+        if ($newCount >= 2) {
+            $blockMinutes    = ($newCount - 1) * 5;
+            $newBlockedUntil = date('Y-m-d H:i:s', strtotime('+' . $blockMinutes . ' minutes'));
+        }
 
         // ── Archive to history_records ──────────────────────────────────
         $resolvedMake = ($reqData['vehicle_make'] === 'Other' && !empty($reqData['vehicle_make_other']))
@@ -125,7 +129,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && !empty($_POST['cancel_request_id'])
             $blockedFmt = date('g:i:s A', strtotime($newBlockedUntil));
             $flash      = 'Request #' . $cancelId . ' cancelled. '
                         . 'You\'ve cancelled ' . $newCount . ' time' . ($newCount !== 1 ? 's' : '') . ' today — '
-                        . 'new requests are blocked until <strong>' . $blockedFmt . '</strong>.';
+                        . 'new requests are blocked for <strong>' . $blockMinutes . ' minutes</strong> until '
+                        . '<strong>' . $blockedFmt . '</strong>.';
             $flashType  = 'warning';
         } else {
             $flash     = 'Request #' . $cancelId . ' has been cancelled.';
@@ -164,6 +169,11 @@ if ($selectedId) {
 if (!$selected && !empty($requests)) {
     $selected = $requests[0];
 }
+
+// Pre-calculate the block duration that WOULD apply on the next cancel,
+// so we can show it in the modal warning.
+$nextCancelCount   = $cancelCount + 1;
+$nextBlockMinutes  = $nextCancelCount >= 2 ? ($nextCancelCount - 1) * 5 : 0;
 
 require_once __DIR__ . '/../includes/header.php';
 require_once __DIR__ . '/../includes/navbar.php';
@@ -652,14 +662,17 @@ require_once __DIR__ . '/../includes/sidebar.php';
     // ── Block banner (shown whenever block is active) ─────────────────────
     if ($isBlocked):
         $remaining = $blockedUntilTs - time(); // seconds remaining
+        // How many minutes was this block?
+        $currentBlockMins = ($cancelCount - 1) * 5;
     ?>
     <div class="block-banner">
         <div class="block-banner-icon">🚫</div>
         <div class="block-banner-text">
-            <strong>New requests temporarily blocked</strong>
+            <strong>New requests blocked for <?php echo $currentBlockMins; ?> minutes</strong>
             <p>
                 You have cancelled <?php echo $cancelCount; ?> time<?php echo $cancelCount !== 1 ? 's' : ''; ?> today.
-                After 2 cancellations, each additional cancel triggers a 5-minute cooldown on new submissions.
+                Each cancellation from the 2nd onward adds 5 more minutes to the cooldown
+                (2nd = 5 min, 3rd = 10 min, 4th = 15 min, and so on).
                 The block lifts automatically — you can still cancel existing pending requests.
             </p>
         </div>
@@ -672,18 +685,23 @@ require_once __DIR__ . '/../includes/sidebar.php';
         </div>
     </div>
     <?php elseif ($cancelCount > 0 && !$isNewDay): ?>
-    <!-- Soft warning: not blocked yet but has 1 cancel today -->
+    <!-- Soft warning: not blocked yet but has cancels today -->
     <div class="cancel-tally">
         <span>Today's cancels:</span>
         <span class="tally-dots">
-            <?php for ($d = 0; $d < 3; $d++): ?>
+            <?php for ($d = 0; $d < 4; $d++): ?>
                 <span class="tally-dot <?php echo $d < $cancelCount ? 'used' : ''; ?>"></span>
             <?php endfor; ?>
         </span>
         <span style="color:#999;">
-            <?php echo $cancelCount >= 2
-                ? '⚠️ Next cancel = 5 min block'
-                : ($cancelCount === 1 ? '1 more = 5 min block' : ''); ?>
+            <?php
+            if ($cancelCount === 1) {
+                echo '⚠️ Next cancel = 5 min block';
+            } else {
+                $nextBlock = $cancelCount * 5; // next cancel will be ($cancelCount+1 - 1)*5
+                echo '⚠️ Next cancel = ' . $nextBlock . ' min block';
+            }
+            ?>
         </span>
     </div>
     <?php endif; ?>
@@ -770,7 +788,7 @@ require_once __DIR__ . '/../includes/sidebar.php';
                         </div>
                         <?php if ($isPending): ?>
                         <button class="btn-cancel"
-                                onclick="openCancelModal(<?php echo $requestId; ?>, <?php echo $cancelCount; ?>)">
+                                onclick="openCancelModal(<?php echo $requestId; ?>, <?php echo $cancelCount; ?>, <?php echo $nextBlockMinutes; ?>)">
                             Cancel Request
                         </button>
                         <?php endif; ?>
@@ -941,12 +959,11 @@ require_once __DIR__ . '/../includes/sidebar.php';
 /* ── Block countdown timer ────────────────────────────────────────────── */
 <?php if ($isBlocked): ?>
 (function () {
-    var endsAt   = <?php echo $blockedUntilTs; ?> * 1000; // ms
-    var el       = document.getElementById('blockCountdown');
-    var newReqBtn = document.querySelector('.btn.btn-primary[disabled]');
+    var endsAt = <?php echo $blockedUntilTs; ?> * 1000; // ms
 
     function tick() {
         var diff = Math.max(0, Math.floor((endsAt - Date.now()) / 1000));
+        var el = document.getElementById('blockCountdown');
         if (el) {
             var m = Math.floor(diff / 60), s = diff % 60;
             el.textContent = String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0');
@@ -962,18 +979,20 @@ require_once __DIR__ . '/../includes/sidebar.php';
 <?php endif; ?>
 
 /* ── Cancel modal ─────────────────────────────────────────────────────── */
-function openCancelModal(requestId, cancelCount) {
+function openCancelModal(requestId, cancelCount, nextBlockMinutes) {
     var modal = document.getElementById('cancelModal');
     var msg   = document.getElementById('cancelModalMsg');
 
     document.getElementById('cancelRequestInput').value = requestId;
 
-    // Personalise the warning message based on cancel history
+    // Build a personalised warning based on the block that WILL apply
     var warningNote = '';
-    if (cancelCount === 0) {
-        warningNote = ' <strong>Note:</strong> A second cancellation today will temporarily block you from submitting new requests for 5 minutes.';
-    } else if (cancelCount >= 1) {
-        warningNote = ' <strong>Warning:</strong> This cancellation will block you from submitting new requests for 5 minutes.';
+    if (nextBlockMinutes === 0) {
+        // First cancel — warn that the next one triggers a block
+        warningNote = ' <strong>Note:</strong> A second cancellation today will block new submissions for 5 minutes.';
+    } else {
+        warningNote = ' <strong>Warning:</strong> This cancellation will block new submissions for '
+                    + nextBlockMinutes + ' minute' + (nextBlockMinutes !== 1 ? 's' : '') + '.';
     }
 
     msg.innerHTML = 'Are you sure you want to cancel request #' + requestId
@@ -988,7 +1007,7 @@ function closeCancelModal() {
     document.body.style.overflow = '';
 }
 
-// Close modal on backdrop click
+// Close modal on backdrop click or Escape
 document.getElementById('cancelModal').addEventListener('click', function (e) {
     if (e.target === this) closeCancelModal();
 });

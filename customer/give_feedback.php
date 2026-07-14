@@ -17,7 +17,6 @@ $historyId = (int) $_GET['history_id'];
 // ----------------------
 // VERIFY OWNERSHIP + ELIGIBILITY
 // ----------------------
-// Job must belong to this customer, be completed, and not already have feedback.
 $stmt = $pdo->prepare(
     'SELECT h.id, h.problem_type, h.mechanic_id, h.mechanic_name, h.completed_at, '
     . 'h.request_id, h.feedback_dismiss_count, '
@@ -42,20 +41,6 @@ $error = '';
 const COMMENT_MAX_LENGTH = 1000;
 
 // ----------------------
-// HANDLE "MAYBE LATER"
-// ----------------------
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['dismiss'])) {
-    // Persisted directly on history_records so the dismissal count survives
-    // logout/login, unlike a session-based counter.
-    $dismissStmt = $pdo->prepare(
-        'UPDATE history_records SET feedback_dismiss_count = feedback_dismiss_count + 1 WHERE id = :hid'
-    );
-    $dismissStmt->execute([':hid' => $historyId]);
-    header('Location: ' . getBasePath() . 'customer/dashboard.php');
-    exit;
-}
-
-// ----------------------
 // HANDLE SUBMISSION
 // ----------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_feedback'])) {
@@ -74,7 +59,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['submit_feedback'])) {
     } elseif (mb_strlen($comments) > COMMENT_MAX_LENGTH) {
         $error = 'Comments cannot exceed ' . COMMENT_MAX_LENGTH . ' characters.';
     } else {
-        // Snapshot customer name for archive integrity
         $nameStmt = $pdo->prepare('SELECT full_name FROM users WHERE id = :id');
         $nameStmt->execute([':id' => $userId]);
         $customerName = $nameStmt->fetchColumn();
@@ -199,7 +183,6 @@ require_once __DIR__ . '/../includes/sidebar.php';
 
             <div style="margin-top:16px;">
                 <button type="submit" name="submit_feedback" value="1" class="btn btn-primary">Submit Feedback</button>
-                <button type="submit" name="dismiss" value="1" class="btn" style="margin-left:8px;">Maybe Later</button>
             </div>
         </form>
     </div>
